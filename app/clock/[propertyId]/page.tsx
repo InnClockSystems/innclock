@@ -130,7 +130,7 @@ export default function ClockInPage({ params }: { params: Promise<{ propertyId: 
 
   if (!loading && !property) {
     return (
-      <main className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <main className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4 md:p-6">
         <p className="text-gray-400 text-sm">Property not found.</p>
       </main>
     )
@@ -154,7 +154,7 @@ export default function ClockInPage({ params }: { params: Promise<{ propertyId: 
             <div className="flex flex-col gap-3">
               {employees.map(e => (
                 <button key={e.id} onClick={() => setSelected(e)}
-                  className={`flex items-center gap-4 bg-white border rounded-2xl px-5 py-4 transition-all ${e.clocked_in ? 'border-green-300 bg-green-50' : 'border-gray-200 hover:border-blue-400 hover:bg-blue-50'}`}>
+                className={`flex items-center gap-4 bg-white border rounded-2xl px-5 py-5 transition-all text-left w-full ${e.clocked_in ? 'border-green-300 bg-green-50' : 'border-gray-200 hover:border-blue-400 hover:bg-blue-50 active:scale-95'}`}>
                   <div className={`w-10 h-10 rounded-full flex items-center justify-center font-medium text-sm ${e.color}`}>
                     {e.initials}
                   </div>
@@ -193,7 +193,7 @@ export default function ClockInPage({ params }: { params: Promise<{ propertyId: 
             {[1, 2, 3, 4, 5, 6, 7, 8, 9, '', 0, '⌫'].map((n, i) => (
               <button key={i}
                 onClick={() => n === '⌫' ? setPin(p => p.slice(0, -1)) : n !== '' ? handlePin(String(n)) : null}
-                className={`h-14 rounded-2xl text-xl font-medium transition-all ${n === '' ? 'invisible' : 'bg-white border border-gray-200 text-gray-800 hover:bg-blue-50 hover:border-blue-300 active:scale-95'}`}>
+                className={`h-16 md:h-14 rounded-2xl text-2xl font-medium transition-all ${n === '' ? 'invisible' : 'bg-white border border-gray-200 text-gray-800 hover:bg-blue-50 hover:border-blue-300 active:scale-95 active:bg-blue-100'}`}>
                 {n}
               </button>
             ))}

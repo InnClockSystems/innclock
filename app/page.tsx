@@ -77,55 +77,36 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Pricing */}
-      <section className="bg-gray-50 py-24">
-        <div className="max-w-4xl mx-auto px-8">
-          <h2 className="text-3xl font-semibold text-gray-900 text-center mb-4">Simple pricing</h2>
-          <p className="text-gray-500 text-center mb-12">One price per property. No per-employee fees. No surprises.</p>
+{/* Pricing */}
+<section className="bg-gray-50 py-24">
+  <div className="max-w-4xl mx-auto px-8">
+    <h2 className="text-3xl font-semibold text-gray-900 text-center mb-4">Simple pricing</h2>
+    <p className="text-gray-500 text-center mb-12">One price per property. No per-employee fees. No surprises.</p>
 
-          <div className="grid grid-cols-2 gap-6 max-w-2xl mx-auto">
-            <div className="bg-white border border-gray-200 rounded-2xl p-6">
-              <h3 className="font-medium text-gray-900 mb-1">Starter</h3>
-              <div className="flex items-baseline gap-1 mb-4">
-                <span className="text-3xl font-semibold text-gray-900">$29</span>
-                <span className="text-gray-400 text-sm">/mo</span>
-              </div>
-              <ul className="text-sm text-gray-500 space-y-2 mb-6">
-                <li>✓ Up to 15 employees</li>
-                <li>✓ 1 property</li>
-                <li>✓ Full timesheets</li>
-                <li>✓ PIN clock-in kiosk</li>
-              </ul>
-              <Link href="/signup"
-                className="block text-center border border-gray-200 text-gray-700 px-4 py-2 rounded-xl text-sm hover:bg-gray-50 transition-all">
-                Get started
-              </Link>
-            </div>
-
-            <div className="bg-gray-900 rounded-2xl p-6">
-              <div className="flex items-center justify-between mb-1">
-                <h3 className="font-medium text-white">Pro</h3>
-                <span className="text-xs bg-blue-500 text-white px-2 py-0.5 rounded-full">Popular</span>
-              </div>
-              <div className="flex items-baseline gap-1 mb-4">
-                <span className="text-3xl font-semibold text-white">$49</span>
-                <span className="text-gray-400 text-sm">/mo</span>
-              </div>
-              <ul className="text-sm text-gray-400 space-y-2 mb-6">
-                <li>✓ Unlimited employees</li>
-                <li>✓ 1 property</li>
-                <li>✓ Full timesheets</li>
-                <li>✓ PIN clock-in kiosk</li>
-                <li>✓ Priority support</li>
-              </ul>
-              <Link href="/signup"
-                className="block text-center bg-white text-gray-900 px-4 py-2 rounded-xl text-sm font-medium hover:bg-gray-100 transition-all">
-                Get started
-              </Link>
-            </div>
-          </div>
+    <div className="max-w-sm mx-auto">
+      <div className="bg-gray-900 rounded-2xl p-8 text-center">
+        <h3 className="font-medium text-white mb-2">InnClock</h3>
+        <div className="flex items-baseline justify-center gap-1 mb-2">
+          <span className="text-5xl font-semibold text-white">$30</span>
+          <span className="text-gray-400 text-sm">/mo</span>
         </div>
-      </section>
+        <p className="text-gray-400 text-sm mb-6">One property · Everything included</p>
+        <ul className="text-sm text-gray-300 space-y-2 mb-8 text-left">
+          <li>✓ Unlimited employees</li>
+          <li>✓ PIN clock-in kiosk</li>
+          <li>✓ Live timesheets</li>
+          <li>✓ PDF payroll export</li>
+          <li>✓ Cancel anytime</li>
+        </ul>
+        <Link href="/signup"
+          className="block bg-white text-gray-900 px-6 py-3 rounded-xl text-sm font-medium hover:bg-gray-100 transition-all">
+          Start free trial
+        </Link>
+        <p className="text-xs text-gray-500 mt-3">No credit card required to start</p>
+      </div>
+    </div>
+  </div>
+</section>
 
       {/* Footer */}
       <footer className="border-t border-gray-100 py-8 px-8">

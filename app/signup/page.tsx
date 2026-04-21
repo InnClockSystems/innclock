@@ -25,14 +25,14 @@ export default function Signup() {
     setStep('plan')
   }
 
-  async function handleSelectPlan(plan: 'starter' | 'pro') {
+  async function handleSubscribe() {
     setLoading(true)
     setError('')
 
     const res = await fetch('/api/signup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, ownerName, propertyName, timezone, plan }),
+      body: JSON.stringify({ email, password, ownerName, propertyName, timezone }),
     })
 
     const result = await res.json()
@@ -56,12 +56,11 @@ export default function Signup() {
           <p className="text-sm text-gray-500 mt-2">Set up your property in minutes</p>
         </div>
 
-        {/* Progress */}
         <div className="flex items-center justify-center gap-2 mb-8">
           {['account', 'property', 'plan'].map((s, i) => (
             <div key={s} className="flex items-center gap-2">
               <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium transition-all
-                ${step === s ? 'bg-gray-900 text-white' : 
+                ${step === s ? 'bg-gray-900 text-white' :
                   ['account', 'property', 'plan'].indexOf(step) > i ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-500'}`}>
                 {['account', 'property', 'plan'].indexOf(step) > i ? '✓' : i + 1}
               </div>
@@ -72,7 +71,6 @@ export default function Signup() {
 
         <div className="bg-white border border-gray-200 rounded-2xl p-6">
 
-          {/* Step 1 — Account */}
           {step === 'account' && (
             <>
               <h2 className="text-base font-medium text-gray-800 mb-4">Create your account</h2>
@@ -105,7 +103,6 @@ export default function Signup() {
             </>
           )}
 
-          {/* Step 2 — Property */}
           {step === 'property' && (
             <>
               <h2 className="text-base font-medium text-gray-800 mb-4">Your property</h2>
@@ -140,35 +137,31 @@ export default function Signup() {
             </>
           )}
 
-          {/* Step 3 — Plan */}
           {step === 'plan' && (
             <>
-              <h2 className="text-base font-medium text-gray-800 mb-4">Choose your plan</h2>
-              <div className="flex flex-col gap-3 mb-4">
-                <button onClick={() => handleSelectPlan('starter')} disabled={loading}
-                  className="border border-gray-200 rounded-2xl p-4 text-left hover:border-blue-400 hover:bg-blue-50 transition-all disabled:opacity-50">
-                  <div className="flex justify-between items-center mb-1">
-                    <span className="font-medium text-gray-800">Starter</span>
-                    <span className="text-gray-900 font-semibold">$29/mo</span>
-                  </div>
-                  <p className="text-xs text-gray-500">Up to 15 employees · 1 property · Full timesheets</p>
-                </button>
-                <button onClick={() => handleSelectPlan('pro')} disabled={loading}
-                  className="border-2 border-blue-400 rounded-2xl p-4 text-left hover:bg-blue-50 transition-all disabled:opacity-50 relative">
-                  <div className="absolute -top-2.5 left-4">
-                    <span className="bg-blue-500 text-white text-xs px-2 py-0.5 rounded-full">Most popular</span>
-                  </div>
-                  <div className="flex justify-between items-center mb-1">
-                    <span className="font-medium text-gray-800">Pro</span>
-                    <span className="text-gray-900 font-semibold">$49/mo</span>
-                  </div>
-                  <p className="text-xs text-gray-500">Unlimited employees · 1 property · Priority support</p>
-                </button>
+              <h2 className="text-base font-medium text-gray-800 mb-4">Start your subscription</h2>
+              <div className="border-2 border-gray-900 rounded-2xl p-5 mb-4">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="font-medium text-gray-800">InnClock</span>
+                  <span className="text-gray-900 font-semibold">$30/mo</span>
+                </div>
+                <ul className="text-xs text-gray-500 space-y-1">
+                  <li>✓ Unlimited employees</li>
+                  <li>✓ PIN clock-in kiosk</li>
+                  <li>✓ Live timesheets</li>
+                  <li>✓ PDF payroll export</li>
+                  <li>✓ Cancel anytime</li>
+                </ul>
               </div>
               {error && <p className="text-red-500 text-xs mb-4">{error}</p>}
-              {loading && <p className="text-center text-sm text-gray-400">Setting up your account...</p>}
+              {loading && <p className="text-center text-sm text-gray-400 mb-4">Setting up your account...</p>}
+              <button onClick={handleSubscribe} disabled={loading}
+                className="w-full bg-gray-900 text-white rounded-xl py-3 text-sm font-medium hover:bg-gray-700 transition-all disabled:opacity-50">
+                {loading ? 'Setting up...' : 'Subscribe for $30/mo'}
+              </button>
+              <p className="text-center text-xs text-gray-400 mt-3">Secure payment via Stripe · Cancel anytime</p>
               <button onClick={() => setStep('property')}
-                className="w-full text-gray-400 text-sm mt-2 hover:text-gray-600">
+                className="w-full text-gray-400 text-sm mt-3 hover:text-gray-600">
                 Back
               </button>
             </>
