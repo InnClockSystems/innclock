@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (event.type === 'checkout.session.completed') {
-    const session = event.data.object as Stripe.CheckoutSession
+    const session = event.data.object as Stripe.Checkout.Session
     const property_id = session.metadata?.property_id
     if (property_id) {
       await supabaseAdmin
