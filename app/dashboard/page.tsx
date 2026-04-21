@@ -65,6 +65,7 @@ export default function Dashboard() {
   const [newPin, setNewPin] = useState('')
   const [addMsg, setAddMsg] = useState('')
   const [welcome, setWelcome] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const supabase = createClient()
 
   useEffect(() => {
@@ -170,6 +171,67 @@ export default function Dashboard() {
     if (property) loadData(property)
   }
 
+  async function exportPayroll() {
+    if (!property) return
+    setExporting(true)
+    try {
+      const { jsPDF } = await import('jspdf')
+      const { default: autoTable } = await import('jspdf-autotable')
+
+      const doc = new jsPDF()
+      const { start, end } = getPayPeriod(new Date())
+
+      doc.setFontSize(18)
+      doc.text('InnClock — Payroll Report', 14, 20)
+      doc.setFontSize(11)
+      doc.setTextColor(100)
+      doc.text(property.name, 14, 30)
+      doc.text(
+        `Pay period: ${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} — ${end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`,
+        14, 38
+      )
+
+      const rows: any[] = []
+      employees.filter(e => e.is_active).forEach(emp => {
+        const empEntries = entries.filter(e => e.employee_id === emp.id)
+        const empTotal = empEntries.reduce((s, e) => s + (e.hours || 0), 0)
+        if (empEntries.length === 0) {
+          rows.push([emp.name, '—', '—', '—', '—', '0.00 hrs'])
+        } else {
+          empEntries.forEach((entry, i) => {
+            rows.push([
+              i === 0 ? emp.name : '',
+              formatDate(entry.clock_in, tz),
+              formatTime(entry.clock_in, tz),
+              entry.clock_out ? formatTime(entry.clock_out, tz) : 'Active',
+              entry.hours ? `${entry.hours}h` : '—',
+              i === empEntries.length - 1 ? `${empTotal.toFixed(2)} hrs` : '',
+            ])
+          })
+        }
+      })
+
+      autoTable(doc, {
+        head: [['Employee', 'Date', 'Clock In', 'Clock Out', 'Hours', 'Total']],
+        body: rows,
+        startY: 48,
+        styles: { fontSize: 10 },
+        headStyles: { fillColor: [30, 30, 30] },
+      })
+
+      const finalY = (doc as any).lastAutoTable.finalY + 10
+      doc.setFontSize(11)
+      doc.setTextColor(0)
+      doc.text(`Total hours all employees: ${totalHours.toFixed(2)} hrs`, 14, finalY)
+
+      doc.save(`${property.name.replace(/ /g, '_')}_payroll_${start.toISOString().slice(0, 10)}.pdf`)
+    } catch (err) {
+      console.error('PDF export error:', err)
+      alert('Could not export PDF. Please try again.')
+    }
+    setExporting(false)
+  }
+
   const { start, end } = getPayPeriod(new Date())
   const totalHours = entries.reduce((sum, e) => sum + (e.hours || 0), 0)
   const clockedInCount = employees.filter(e => e.clocked_in).length
@@ -269,9 +331,17 @@ export default function Dashboard() {
               <div className="bg-white border border-gray-200 rounded-2xl p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-sm font-medium text-gray-700">Pay period</h2>
-                  <span className="text-xs text-gray-500">
-                    {start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} — {end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-gray-500">
+                      {start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} — {end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                    </span>
+                    <button
+                      onClick={exportPayroll}
+                      disabled={exporting}
+                      className="text-xs bg-gray-900 text-white px-3 py-1.5 rounded-xl hover:bg-gray-700 transition-all disabled:opacity-50">
+                      {exporting ? 'Exporting...' : 'Export PDF'}
+                    </button>
+                  </div>
                 </div>
 
                 {employees.filter(e => e.is_active).map(emp => {
