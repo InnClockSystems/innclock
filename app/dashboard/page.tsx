@@ -24,6 +24,21 @@ type ClockEntry = {
   edit_count?: number
   original_clock_in?: string
   original_clock_out?: string
+  deleted_at?: string
+  deleted_by_email?: string
+  delete_reason?: string
+  edit_history?: EditRecord[]
+}
+
+type EditRecord = {
+  id: string
+  edited_at: string
+  edited_by_email: string
+  edit_reason: string
+  previous_clock_in: string
+  previous_clock_out: string | null
+  new_clock_in: string
+  new_clock_out: string | null
 }
 
 type Property = {
@@ -73,13 +88,29 @@ export default function Dashboard() {
   const [payStartDay, setPayStartDay] = useState(1)
   const [payLength, setPayLength] = useState(14)
   const [settingsMsg, setSettingsMsg] = useState('')
-  const supabase = createClient()
   const [lockedEmployees, setLockedEmployees] = useState<Set<string>>(new Set())
   const [editingEntry, setEditingEntry] = useState<string | null>(null)
-const [editClockIn, setEditClockIn] = useState('')
-const [editClockOut, setEditClockOut] = useState('')
-const [editReason, setEditReason] = useState('')
-const [editMsg, setEditMsg] = useState('')
+  const [editClockIn, setEditClockIn] = useState('')
+  const [editClockOut, setEditClockOut] = useState('')
+  const [editReason, setEditReason] = useState('')
+  const [editMsg, setEditMsg] = useState('')
+  const [weekOffset, setWeekOffset] = useState(0)
+  const [weekEntries, setWeekEntries] = useState<ClockEntry[]>([])
+  const [deletingEntry, setDeletingEntry] = useState<string | null>(null)
+  const [deleteReason, setDeleteReason] = useState('')
+  const [deleteMsg, setDeleteMsg] = useState('')
+  const supabase = createClient()
+
+  const weekDays = Array.from({ length: 7 }, (_, i) => {
+    const monday = new Date()
+    const day = monday.getDay()
+    const diff = day === 0 ? -6 : 1 - day
+    monday.setDate(monday.getDate() + diff + weekOffset * 7)
+    monday.setHours(0, 0, 0, 0)
+    const d = new Date(monday)
+    d.setDate(monday.getDate() + i)
+    return d
+  })
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -92,13 +123,17 @@ const [editMsg, setEditMsg] = useState('')
     loadProperty()
   }, [])
 
+  useEffect(() => {
+    if (property) loadWeekEntries(property, weekDays)
+  }, [weekOffset, property])
+
   async function loadProperty() {
     setLoading(true)
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { window.location.href = '/login'; return }
     const { data: prop } = await supabase.from('properties')
-  .select('id, name, timezone, pay_period_start_day, pay_period_length, trial_ends_at, subscription_status')
-  .eq('owner_email', user.email).single()
+      .select('id, name, timezone, pay_period_start_day, pay_period_length, trial_ends_at, subscription_status')
+      .eq('owner_email', user.email).single()
     if (!prop) { setLoading(false); return }
     setProperty(prop)
     setPayStartDay(prop.pay_period_start_day ?? 1)
@@ -111,39 +146,77 @@ const [editMsg, setEditMsg] = useState('')
     const { data: emps } = await supabase.from('employees').select('id, name, is_active').eq('property_id', prop.id)
     const { data: open } = await supabase.from('clock_entries').select('employee_id, clock_in').eq('property_id', prop.id).is('clock_out', null)
     const openMap = new Map((open || []).map((e: any) => [e.employee_id, e.clock_in]))
-  
     const mappedEmps = (emps || []).map((e: any) => ({
       id: e.id, name: e.name, is_active: e.is_active,
       clocked_in: openMap.has(e.id), clock_in_time: openMap.get(e.id) || null,
     }))
     setEmployees(mappedEmps)
     await checkLockedEmployees(mappedEmps)
-  
-    const { data: periodEntries } = await supabase.from('clock_entries')
-  .select('id, employee_id, clock_in, clock_out, edited_at, edited_by_email, edit_reason, edit_count, original_clock_in, original_clock_out, employees(name)')
-  .eq('property_id', prop.id).gte('clock_in', start.toISOString()).lte('clock_in', end.toISOString())
-  .order('clock_in', { ascending: false })
-  setEntries((periodEntries || []).map((e: any) => ({
-    id: e.id, employee_id: e.employee_id, employee_name: e.employees?.name || 'Unknown',
-    clock_in: e.clock_in, clock_out: e.clock_out,
-    edited_at: e.edited_at, edited_by_email: e.edited_by_email, edit_reason: e.edit_reason,
-    edit_count: e.edit_count || 0,
-    original_clock_in: e.original_clock_in,
-    original_clock_out: e.original_clock_out,
-    hours: e.clock_out ? Math.round(((new Date(e.clock_out).getTime() - new Date(e.clock_in).getTime()) / 3600000) * 100) / 100 : null,
-  })))
+
+    const { data: periodData } = await supabase.from('clock_entries')
+      .select('id, employee_id, clock_in, clock_out, edited_at, edited_by_email, edit_reason, edit_count, original_clock_in, original_clock_out, deleted_at, deleted_by_email, delete_reason, employees(name)')
+      .eq('property_id', prop.id)
+      .gte('clock_in', start.toISOString())
+      .lte('clock_in', end.toISOString())
+      .order('clock_in', { ascending: true })
+
+    setEntries((periodData || []).map((e: any) => ({
+      id: e.id, employee_id: e.employee_id, employee_name: e.employees?.name || 'Unknown',
+      clock_in: e.clock_in, clock_out: e.clock_out,
+      edited_at: e.edited_at, edited_by_email: e.edited_by_email, edit_reason: e.edit_reason,
+      edit_count: e.edit_count || 0,
+      original_clock_in: e.original_clock_in, original_clock_out: e.original_clock_out,
+      deleted_at: e.deleted_at, deleted_by_email: e.deleted_by_email, delete_reason: e.delete_reason,
+      hours: e.clock_out ? Math.round(((new Date(e.clock_out).getTime() - new Date(e.clock_in).getTime()) / 3600000) * 100) / 100 : null,
+    })))
     setLoading(false)
+    await loadWeekEntries(prop, weekDays)
+  }
+
+  async function loadWeekEntries(prop: Property, days: Date[]) {
+    const start = days[0]
+    const end = new Date(days[6])
+    end.setHours(23, 59, 59, 999)
+    const { data } = await supabase.from('clock_entries')
+      .select('id, employee_id, clock_in, clock_out, edited_at, edited_by_email, edit_reason, edit_count, original_clock_in, original_clock_out, deleted_at, deleted_by_email, delete_reason, employees(name)')
+      .eq('property_id', prop.id)
+      .gte('clock_in', start.toISOString())
+      .lte('clock_in', end.toISOString())
+      .order('clock_in', { ascending: true })
+
+    const rawEntries = data || []
+    const entryIds = rawEntries.map((e: any) => e.id)
+    let editHistoryMap: Record<string, EditRecord[]> = {}
+
+    if (entryIds.length > 0) {
+      const { data: edits } = await supabase
+        .from('clock_entry_edits').select('*')
+        .in('clock_entry_id', entryIds)
+        .order('edited_at', { ascending: true })
+      ;(edits || []).forEach((edit: any) => {
+        if (!editHistoryMap[edit.clock_entry_id]) editHistoryMap[edit.clock_entry_id] = []
+        editHistoryMap[edit.clock_entry_id].push(edit)
+      })
+    }
+
+    setWeekEntries(rawEntries.map((e: any) => ({
+      id: e.id, employee_id: e.employee_id, employee_name: e.employees?.name || 'Unknown',
+      clock_in: e.clock_in, clock_out: e.clock_out,
+      edited_at: e.edited_at, edited_by_email: e.edited_by_email, edit_reason: e.edit_reason,
+      edit_count: e.edit_count || 0, original_clock_in: e.original_clock_in, original_clock_out: e.original_clock_out,
+      deleted_at: e.deleted_at, deleted_by_email: e.deleted_by_email, delete_reason: e.delete_reason,
+      edit_history: editHistoryMap[e.id] || [],
+      hours: e.clock_out ? Math.round(((new Date(e.clock_out).getTime() - new Date(e.clock_in).getTime()) / 3600000) * 100) / 100 : null,
+    })))
   }
 
   async function checkLockedEmployees(emps: Employee[]) {
     const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString()
     const locked = new Set<string>()
     for (const emp of emps) {
-      const { count } = await supabase
-        .from('pin_attempts')
+      const { count } = await supabase.from('pin_attempts')
         .select('*', { count: 'exact', head: true })
-        .eq('employee_id', emp.id)
-        .eq('success', false)
+        .eq('employee_id', emp.id).eq('success', false)
         .gte('attempted_at', fifteenMinutesAgo)
       if ((count ?? 0) >= 5) locked.add(emp.id)
     }
@@ -177,8 +250,7 @@ const [editMsg, setEditMsg] = useState('')
 
   async function unlockEmployee(id: string) {
     const res = await fetch('/api/unlock', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ employee_id: id }),
     })
     const result = await res.json()
@@ -200,52 +272,64 @@ const [editMsg, setEditMsg] = useState('')
       setSettingsMsg('Settings saved!')
       loadData(updated)
       setTimeout(() => setSettingsMsg(''), 3000)
-    } else {
-      setSettingsMsg('Something went wrong.')
-    }
+    } else { setSettingsMsg('Something went wrong.') }
   }
 
   async function saveTimeEdit(entryId: string) {
     if (!editReason.trim()) { setEditMsg('Please enter a reason for the edit.'); return }
     if (!property) return
-  
     const { data: { user } } = await supabase.auth.getUser()
-    const entry = entries.find(e => e.id === entryId)
+    const entry = weekEntries.find(e => e.id === entryId) || entries.find(e => e.id === entryId)
     if (!entry) return
-  
-    const { error } = await supabase.from('clock_entries')
-  .update({
-    clock_in: new Date(editClockIn).toISOString(),
-    clock_out: editClockOut ? new Date(editClockOut).toISOString() : null,
-    edited_at: new Date().toISOString(),
-    edited_by_email: user?.email,
-    edit_reason: editReason,
-    original_clock_in: entry.original_clock_in || entry.clock_in,
-    original_clock_out: entry.original_clock_out || entry.clock_out,
-    edit_count: (entry.edit_count || 0) + 1,
-  })
-  .eq('id', entryId)
-  
-    if (error) { setEditMsg('Something went wrong.'); return }
-  
-    await supabase.from('audit_log').insert({
-      property_id: property.id,
-      action: 'time_edit',
-      performed_by: user?.email || 'owner',
-      details: {
-        entry_id: entryId,
-        original_in: entry.clock_in,
-        original_out: entry.clock_out,
-        new_in: editClockIn,
-        new_out: editClockOut,
-        reason: editReason,
-      }
+    const newClockIn = new Date(editClockIn).toISOString()
+    const newClockOut = editClockOut ? new Date(editClockOut).toISOString() : null
+
+    await supabase.from('clock_entry_edits').insert({
+      clock_entry_id: entryId, property_id: property.id,
+      edited_by_email: user?.email || 'owner', edit_reason: editReason,
+      previous_clock_in: entry.clock_in, previous_clock_out: entry.clock_out,
+      new_clock_in: newClockIn, new_clock_out: newClockOut,
+      edited_at: new Date().toISOString(),
     })
-  
-    setEditingEntry(null)
-    setEditReason('')
-    setEditMsg('')
-    loadData(property)
+
+    const { error } = await supabase.from('clock_entries').update({
+      clock_in: newClockIn, clock_out: newClockOut,
+      edited_at: new Date().toISOString(), edited_by_email: user?.email,
+      edit_reason: editReason,
+      original_clock_in: entry.original_clock_in || entry.clock_in,
+      original_clock_out: entry.original_clock_out || entry.clock_out,
+      edit_count: (entry.edit_count || 0) + 1,
+    }).eq('id', entryId)
+
+    if (error) { setEditMsg('Something went wrong.'); return }
+
+    await supabase.from('audit_log').insert({
+      property_id: property.id, action: 'time_edit',
+      performed_by: user?.email || 'owner',
+      details: { entry_id: entryId, previous_in: entry.clock_in, previous_out: entry.clock_out, new_in: newClockIn, new_out: newClockOut, reason: editReason }
+    })
+
+    setEditingEntry(null); setEditReason(''); setEditMsg('')
+    loadWeekEntries(property, weekDays)
+  }
+
+  async function deleteTimeEntry(entryId: string) {
+    if (!deleteReason.trim()) { setDeleteMsg('Please enter a reason.'); return }
+    if (!property) return
+    const { data: { user } } = await supabase.auth.getUser()
+    const { error } = await supabase.from('clock_entries').update({
+      deleted_at: new Date().toISOString(),
+      deleted_by_email: user?.email,
+      delete_reason: deleteReason,
+    }).eq('id', entryId)
+    if (error) { setDeleteMsg('Something went wrong.'); return }
+    await supabase.from('audit_log').insert({
+      property_id: property.id, action: 'time_delete',
+      performed_by: user?.email || 'owner',
+      details: { entry_id: entryId, reason: deleteReason }
+    })
+    setDeletingEntry(null); setDeleteReason(''); setDeleteMsg('')
+    loadWeekEntries(property, weekDays)
   }
 
   async function exportPayroll() {
@@ -258,46 +342,51 @@ const [editMsg, setEditMsg] = useState('')
       const { start, end } = getPayPeriod(new Date(), property.pay_period_start_day ?? 1, property.pay_period_length ?? 14)
       doc.setFontSize(18)
       doc.text('InnClock — Payroll Report', 14, 20)
-      doc.setFontSize(11)
-      doc.setTextColor(100)
+      doc.setFontSize(11); doc.setTextColor(100)
       doc.text(property.name, 14, 30)
       doc.text(`Pay period: ${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} — ${end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`, 14, 38)
       const rows: any[] = []
       employees.filter(e => e.is_active).forEach(emp => {
         const empEntries = entries.filter(e => e.employee_id === emp.id)
         const empTotal = empEntries.reduce((s, e) => s + (e.hours || 0), 0)
-        if (empEntries.length === 0) { rows.push([emp.name, '—', '—', '—', '—', '0.00 hrs']); return }
+        if (empEntries.length === 0) { rows.push([emp.name, '—', '—', '—', '—', '0.00 hrs', '']); return }
         empEntries.forEach((entry, i) => {
+          let notes = ''
+          if (entry.deleted_at) {
+            notes = `DELETED — ${entry.delete_reason}`
+          } else if (entry.edited_at) {
+            notes = `Edited ${entry.edit_count || 1}x\nOriginal: ${entry.original_clock_in ? formatTime(entry.original_clock_in, tz) : '?'} → ${entry.original_clock_out ? formatTime(entry.original_clock_out, tz) : '?'}\nReason: ${entry.edit_reason}`
+          }
           rows.push([
             i === 0 ? emp.name : '',
             formatDate(entry.clock_in, tz),
-            formatTime(entry.clock_in, tz),
-            entry.clock_out ? formatTime(entry.clock_out, tz) : 'Active',
-            entry.hours ? `${entry.hours}h` : '—',
+            entry.deleted_at ? 'DELETED' : formatTime(entry.clock_in, tz),
+            entry.deleted_at ? '—' : (entry.clock_out ? formatTime(entry.clock_out, tz) : 'Active'),
+            entry.deleted_at ? '—' : (entry.hours ? `${entry.hours}h` : '—'),
             i === empEntries.length - 1 ? `${empTotal.toFixed(2)} hrs` : '',
-            entry.edited_at ? `Edited ${entry.edit_count || 1}x\nWas: ${entry.original_clock_in ? formatTime(entry.original_clock_in, tz) : '?'} — ${entry.original_clock_out ? formatTime(entry.original_clock_out, tz) : '?'}\nReason: ${entry.edit_reason}` : '',
+            notes,
           ])
         })
       })
       autoTable(doc, {
         head: [['Employee', 'Date', 'Clock In', 'Clock Out', 'Hours', 'Total', 'Notes']],
-        body: rows,
-        startY: 48,
+        body: rows, startY: 48,
         styles: { fontSize: 9 },
         headStyles: { fillColor: [22, 163, 74] },
-        columnStyles: {
-          6: { cellWidth: 50, textColor: [220, 53, 69], fontStyle: 'italic' }
-        }
+        columnStyles: { 6: { cellWidth: 50, textColor: [220, 53, 69], fontStyle: 'italic' } }
       })
       const finalY = (doc as any).lastAutoTable.finalY + 10
       doc.setFontSize(11); doc.setTextColor(0)
       doc.text(`Total hours all employees: ${totalHours.toFixed(2)} hrs`, 14, finalY)
-const editedCount = entries.filter(e => e.edited_at).length
-if (editedCount > 0) {
-  doc.setFontSize(9)
-  doc.setTextColor(220, 53, 69)
-  doc.text(`* ${editedCount} entr${editedCount === 1 ? 'y was' : 'ies were'} manually adjusted by management after the fact. Original times, edit counts, and reasons are noted in the Notes column for full transparency.`, 14, finalY + 8)
-}
+      const editedCount = entries.filter(e => e.edited_at && !e.deleted_at).length
+      const deletedCount = entries.filter(e => e.deleted_at).length
+      if (editedCount > 0 || deletedCount > 0) {
+        doc.setFontSize(9); doc.setTextColor(220, 53, 69)
+        const notes = []
+        if (editedCount > 0) notes.push(`${editedCount} entr${editedCount === 1 ? 'y was' : 'ies were'} manually edited by management`)
+        if (deletedCount > 0) notes.push(`${deletedCount} entr${deletedCount === 1 ? 'y was' : 'ies were'} deleted by management`)
+        doc.text(`* ${notes.join('. ')}. Full details noted above.`, 14, finalY + 8)
+      }
       doc.save(`${property.name.replace(/ /g, '_')}_payroll_${start.toISOString().slice(0, 10)}.pdf`)
     } catch (err) { alert('Could not export PDF. Please try again.') }
     setExporting(false)
@@ -309,6 +398,11 @@ if (editedCount > 0) {
   const tz = property?.timezone || 'America/Chicago'
   const inputStyle = { width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '10px 14px', fontSize: '14px', color: 'white', outline: 'none', boxSizing: 'border-box' as const }
   const selectStyle = { width: '100%', background: '#0f1419', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '11px 14px', fontSize: '14px', color: 'white', outline: 'none', cursor: 'pointer', boxSizing: 'border-box' as const }
+
+  const toLocal = (iso: string) => {
+    const d = new Date(iso)
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+  }
 
   return (
     <main style={{ minHeight: '100vh', background: '#080b0e', color: '#f0f4f8' }}>
@@ -326,22 +420,20 @@ if (editedCount > 0) {
             {property && <span style={{ fontSize: '12px', color: '#475569', marginLeft: '10px' }}>{property.name}</span>}
           </div>
         </div>
-        <button onClick={handleSignOut}
-          style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: '#94a3b8', borderRadius: '8px', padding: '7px 14px', fontSize: '13px', cursor: 'pointer' }}>
+        <button onClick={handleSignOut} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: '#94a3b8', borderRadius: '8px', padding: '7px 14px', fontSize: '13px', cursor: 'pointer' }}>
           Sign out
         </button>
       </nav>
 
-      <div style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 24px' }}>
+      <div style={{ maxWidth: '1100px', margin: '0 auto', padding: '32px 24px' }}>
 
-      {welcome && (
+        {welcome && (
           <div style={{ background: 'rgba(22,163,74,0.1)', border: '1px solid rgba(22,163,74,0.3)', borderRadius: '12px', padding: '14px 18px', marginBottom: '24px', fontSize: '14px', color: '#4ade80', display: 'flex', alignItems: 'center', gap: '10px' }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
             Welcome to InnClock! Your property is set up and ready to go.
           </div>
         )}
 
-        {/* Trial banner */}
         {property && property.subscription_status === 'trial' && (() => {
           const daysLeft = Math.ceil((new Date(property.trial_ends_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
           const isExpired = daysLeft <= 0
@@ -388,6 +480,7 @@ if (editedCount > 0) {
           </div>
         ) : (
           <>
+            {/* OVERVIEW */}
             {tab === 'overview' && (
               <div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '20px' }}>
@@ -436,14 +529,25 @@ if (editedCount > 0) {
               </div>
             )}
 
+            {/* TIMESHEETS */}
             {tab === 'timesheets' && (
-              <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '24px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
-                  <div>
-                    <div style={{ fontSize: '15px', fontWeight: 700, color: 'white', marginBottom: '2px' }}>Pay period</div>
-                    <div style={{ fontSize: '12px', color: '#475569' }}>
-                      {start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} — {end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <button onClick={() => setWeekOffset(w => w - 1)}
+                      style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#94a3b8', borderRadius: '8px', padding: '8px 14px', fontSize: '13px', cursor: 'pointer', fontWeight: 600 }}>
+                      ← Prev
+                    </button>
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: 'white' }}>
+                        {weekDays[0].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} — {weekDays[6].toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </div>
+                      {weekOffset === 0 && <div style={{ fontSize: '11px', color: '#4ade80', marginTop: '2px' }}>Current week</div>}
                     </div>
+                    <button onClick={() => setWeekOffset(w => w + 1)}
+                      style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#94a3b8', borderRadius: '8px', padding: '8px 14px', fontSize: '13px', cursor: 'pointer', fontWeight: 600 }}>
+                      Next →
+                    </button>
                   </div>
                   <button onClick={exportPayroll} disabled={exporting}
                     style={{ background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', padding: '9px 16px', fontSize: '13px', fontWeight: 600, cursor: exporting ? 'not-allowed' : 'pointer', opacity: exporting ? 0.6 : 1 }}>
@@ -451,169 +555,272 @@ if (editedCount > 0) {
                   </button>
                 </div>
 
-                {employees.filter(e => e.is_active).map(emp => {
-                  const empEntries = entries.filter(e => e.employee_id === emp.id)
-                  const empTotal = empEntries.reduce((s, e) => s + (e.hours || 0), 0)
-                  return (
-                    <div key={emp.id} style={{ marginBottom: '24px', paddingBottom: '24px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                        <span style={{ fontSize: '14px', fontWeight: 600, color: '#e2e8f0' }}>{emp.name}</span>
-                        <span style={{ fontSize: '14px', fontWeight: 700, color: '#4ade80' }}>{empTotal.toFixed(2)} hrs</span>
-                      </div>
-                      {empEntries.length === 0 ? (
-                        <p style={{ fontSize: '12px', color: '#334155', paddingLeft: '8px' }}>No entries this period</p>
-                      ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                          {empEntries.map(e => (
-  <div key={e.id}>
-    {editingEntry === e.id ? (
-      <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '12px', marginBottom: '8px' }}>
-        <div style={{ fontSize: '11px', color: '#f87171', marginBottom: '10px', fontWeight: 600 }}>EDITING TIME ENTRY</div>
-        <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>Clock in</div>
-            <input type="datetime-local" value={editClockIn} onChange={e => setEditClockIn(e.target.value)}
-              style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '7px 10px', fontSize: '12px', color: 'white', outline: 'none', boxSizing: 'border-box' as const }} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>Clock out</div>
-            <input type="datetime-local" value={editClockOut} onChange={e => setEditClockOut(e.target.value)}
-              style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '7px 10px', fontSize: '12px', color: 'white', outline: 'none', boxSizing: 'border-box' as const }} />
-          </div>
-        </div>
-        <input placeholder="Reason for edit (required)" value={editReason} onChange={e => setEditReason(e.target.value)}
-          style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '7px 10px', fontSize: '12px', color: 'white', outline: 'none', marginBottom: '8px', boxSizing: 'border-box' as const }} />
-        {editMsg && <div style={{ fontSize: '11px', color: '#f87171', marginBottom: '8px' }}>{editMsg}</div>}
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button onClick={() => saveTimeEdit(e.id)}
-            style={{ background: '#16a34a', color: 'white', border: 'none', borderRadius: '6px', padding: '6px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>
-            Save
-          </button>
-          <button onClick={() => { setEditingEntry(null); setEditReason(''); setEditMsg('') }}
-            style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.1)', color: '#64748b', borderRadius: '6px', padding: '6px 14px', fontSize: '12px', cursor: 'pointer' }}>
-            Cancel
-          </button>
-        </div>
-      </div>
-    ) : (
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '12px', color: '#64748b', paddingLeft: '8px', paddingTop: '4px', paddingBottom: '4px' }}>
-        <span style={{ minWidth: '90px' }}>{formatDate(e.clock_in, tz)}</span>
-        <span style={{ color: '#4ade80' }}>▶ {formatTime(e.clock_in, tz)}</span>
-        <span style={{ color: '#f87171' }}>◼ {e.clock_out ? formatTime(e.clock_out, tz) : '—'}</span>
-        {e.edited_at && (
-  <span style={{ fontSize: '10px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171', padding: '1px 6px', borderRadius: '100px', fontWeight: 600 }}
-    title={`Last edited by ${e.edited_by_email} — Reason: ${e.edit_reason}`}>
-    ✎ Edited {(e.edit_count || 0) > 1 ? `(${e.edit_count}x)` : ''}
-  </span>
-)}
-        <span style={{ marginLeft: 'auto', fontWeight: 600, color: '#94a3b8' }}>{e.hours ? `${e.hours}h` : 'Active'}</span>
-        <button onClick={() => {
-          setEditingEntry(e.id)
-          setEditMsg('')
-          const toLocal = (iso: string) => {
-            const d = new Date(iso)
-            return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
-          }
-          setEditClockIn(toLocal(e.clock_in))
-          setEditClockOut(e.clock_out ? toLocal(e.clock_out) : '')
-        }}
-          style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.08)', color: '#475569', borderRadius: '6px', padding: '3px 10px', fontSize: '11px', cursor: 'pointer' }}>
-          Edit
-        </button>
-      </div>
-    )}
-  </div>
-))}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: '8px' }}>
-                  <span style={{ fontSize: '14px', fontWeight: 600, color: '#94a3b8' }}>Total hours</span>
-                  <span style={{ fontSize: '16px', fontWeight: 800, color: '#4ade80' }}>{totalHours.toFixed(2)} hrs</span>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '900px' }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: 'left', padding: '10px 14px', fontSize: '12px', color: '#475569', fontWeight: 600, background: 'rgba(255,255,255,0.03)', borderBottom: '1px solid rgba(255,255,255,0.07)', minWidth: '140px' }}>
+                          Employee
+                        </th>
+                        {weekDays.map((day, i) => {
+                          const isToday = day.toDateString() === new Date().toDateString()
+                          return (
+                            <th key={i} style={{ textAlign: 'center', padding: '10px 8px', fontSize: '11px', fontWeight: 600, background: isToday ? 'rgba(22,163,74,0.1)' : 'rgba(255,255,255,0.03)', borderBottom: '1px solid rgba(255,255,255,0.07)', borderLeft: '1px solid rgba(255,255,255,0.04)', minWidth: '130px' }}>
+                              <div style={{ color: isToday ? '#4ade80' : '#475569' }}>{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][i]}</div>
+                              <div style={{ color: isToday ? '#4ade80' : '#64748b', fontSize: '13px', fontWeight: 700, marginTop: '2px' }}>{day.getDate()}</div>
+                            </th>
+                          )
+                        })}
+                        <th style={{ textAlign: 'center', padding: '10px 8px', fontSize: '12px', color: '#475569', fontWeight: 600, background: 'rgba(255,255,255,0.03)', borderBottom: '1px solid rgba(255,255,255,0.07)', borderLeft: '1px solid rgba(255,255,255,0.06)', minWidth: '70px' }}>
+                          Total
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {employees.filter(e => e.is_active).map((emp, rowIdx) => {
+                        const empWeekEntries = weekEntries.filter(e => e.employee_id === emp.id)
+                        const weekTotal = empWeekEntries.filter(e => !e.deleted_at).reduce((s, e) => s + (e.hours || 0), 0)
+                        const isOvertime = weekTotal > 40
+                        return (
+                          <tr key={emp.id} style={{ background: rowIdx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)' }}>
+                            <td style={{ padding: '12px 14px', borderBottom: '1px solid rgba(255,255,255,0.04)', verticalAlign: 'top' }}>
+                              <div style={{ fontSize: '13px', fontWeight: 600, color: '#e2e8f0' }}>{emp.name}</div>
+                              <div style={{ fontSize: '11px', color: '#334155', marginTop: '2px' }}>{(emp as any).department || ''}</div>
+                            </td>
+                            {weekDays.map((day, i) => {
+                              const dayEntries = empWeekEntries.filter(e => new Date(e.clock_in).toDateString() === day.toDateString())
+                              const isEdited = dayEntries.some(e => e.edited_at && !e.deleted_at)
+                              const isToday = day.toDateString() === new Date().toDateString()
+                              return (
+                                <td key={i} style={{ padding: '8px', borderBottom: '1px solid rgba(255,255,255,0.04)', borderLeft: '1px solid rgba(255,255,255,0.04)', textAlign: 'left', verticalAlign: 'top', background: isEdited ? 'rgba(239,68,68,0.05)' : isToday ? 'rgba(22,163,74,0.03)' : 'transparent' }}>
+                                  {dayEntries.length === 0 ? (
+                                    <div style={{ textAlign: 'center', color: '#1e293b', fontSize: '12px', paddingTop: '8px' }}>—</div>
+                                  ) : dayEntries.map(e => (
+                                    <div key={e.id} style={{ marginBottom: dayEntries.length > 1 ? '8px' : 0 }}>
+                                      {e.deleted_at ? (
+                                        <div style={{ padding: '4px 6px', background: 'rgba(239,68,68,0.05)', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.15)' }}>
+                                          <div style={{ fontSize: '10px', color: '#f87171', fontWeight: 700 }}>TIME DELETED</div>
+                                          <div style={{ fontSize: '9px', color: '#475569', fontStyle: 'italic', marginTop: '2px' }}>{e.delete_reason}</div>
+                                        </div>
+                                      ) : e.edit_history && e.edit_history.length > 0 ? (
+                                        <div>
+                                          {/* Original — red */}
+                                          <div style={{ padding: '3px 6px', background: 'rgba(239,68,68,0.06)', borderRadius: '4px', borderLeft: '2px solid #f87171', marginBottom: '3px' }}>
+                                            <div style={{ fontSize: '9px', color: '#f87171', fontWeight: 700, marginBottom: '1px' }}>ORIGINAL</div>
+                                            <div style={{ fontSize: '11px', color: '#f87171' }}>
+                                              {formatTime(e.edit_history[0].previous_clock_in, tz)} → {e.edit_history[0].previous_clock_out ? formatTime(e.edit_history[0].previous_clock_out, tz) : '—'}
+                                            </div>
+                                          </div>
+                                          {/* Middle edits — red */}
+                                          {e.edit_history.slice(0, -1).map((edit, idx) => (
+                                            <div key={edit.id} style={{ padding: '3px 6px', background: 'rgba(239,68,68,0.06)', borderRadius: '4px', borderLeft: '2px solid #f87171', marginBottom: '3px' }}>
+                                              <div style={{ fontSize: '9px', color: '#f87171', fontWeight: 700, marginBottom: '1px' }}>EDIT {idx + 1}</div>
+                                              <div style={{ fontSize: '11px', color: '#f87171' }}>
+                                                {formatTime(edit.new_clock_in, tz)} → {edit.new_clock_out ? formatTime(edit.new_clock_out, tz) : '—'}
+                                              </div>
+                                              <div style={{ fontSize: '9px', color: '#475569', fontStyle: 'italic', marginTop: '1px' }}>{edit.edit_reason}</div>
+                                            </div>
+                                          ))}
+                                          {/* Current — green */}
+                                          <div style={{ padding: '3px 6px', background: 'rgba(22,163,74,0.06)', borderRadius: '4px', borderLeft: '2px solid #4ade80', marginBottom: '3px' }}>
+                                            <div style={{ fontSize: '9px', color: '#4ade80', fontWeight: 700, marginBottom: '1px' }}>CURRENT</div>
+                                            <div style={{ fontSize: '11px', color: '#4ade80', fontWeight: 600 }}>
+                                              {formatTime(e.clock_in, tz)} → {e.clock_out ? formatTime(e.clock_out, tz) : '🟢'}
+                                            </div>
+                                            <div style={{ fontSize: '9px', color: '#475569', fontStyle: 'italic', marginTop: '1px' }}>
+                                              {e.edit_history[e.edit_history.length - 1].edit_reason}
+                                            </div>
+                                            <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>{e.hours ? `${e.hours}h` : 'Active'}</div>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        /* No edits — green */
+                                        <div style={{ padding: '3px 6px', background: 'rgba(22,163,74,0.06)', borderRadius: '4px', borderLeft: '2px solid #4ade80', marginBottom: '3px' }}>
+                                          <div style={{ fontSize: '11px', color: '#4ade80', fontWeight: 600 }}>
+                                            {formatTime(e.clock_in, tz)} → {e.clock_out ? formatTime(e.clock_out, tz) : '🟢 Active'}
+                                          </div>
+                                          <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>{e.hours ? `${e.hours}h` : 'Active'}</div>
+                                        </div>
+                                      )}
+                                      {!e.deleted_at && (
+                                        <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+                                          <button onClick={() => { setEditingEntry(e.id); setEditMsg(''); setEditClockIn(toLocal(e.clock_in)); setEditClockOut(e.clock_out ? toLocal(e.clock_out) : ''); setEditReason('') }}
+                                            style={{ flex: 1, background: 'transparent', border: '1px solid rgba(255,255,255,0.08)', color: '#475569', borderRadius: '4px', padding: '2px 6px', fontSize: '10px', cursor: 'pointer' }}>
+                                            Edit
+                                          </button>
+                                          <button onClick={() => setDeletingEntry(e.id)}
+                                            style={{ flex: 1, background: 'transparent', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', borderRadius: '4px', padding: '2px 6px', fontSize: '10px', cursor: 'pointer' }}>
+                                            Delete
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                                </td>
+                              )
+                            })}
+                            <td style={{ padding: '12px 8px', borderBottom: '1px solid rgba(255,255,255,0.04)', borderLeft: '1px solid rgba(255,255,255,0.06)', textAlign: 'center', verticalAlign: 'top' }}>
+                              <div style={{ fontSize: '13px', fontWeight: 700, color: isOvertime ? '#f87171' : '#4ade80' }}>{weekTotal.toFixed(1)}h</div>
+                              {isOvertime && <div style={{ fontSize: '9px', color: '#f87171', fontWeight: 700, marginTop: '2px' }}>OT</div>}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td style={{ padding: '12px 14px', fontSize: '12px', fontWeight: 700, color: '#94a3b8', borderTop: '1px solid rgba(255,255,255,0.08)' }}>Total</td>
+                        {weekDays.map((day, i) => {
+                          const dayTotal = weekEntries.filter(e => !e.deleted_at && new Date(e.clock_in).toDateString() === day.toDateString()).reduce((s, e) => s + (e.hours || 0), 0)
+                          return (
+                            <td key={i} style={{ padding: '12px 8px', textAlign: 'center', fontSize: '12px', fontWeight: 700, color: '#64748b', borderTop: '1px solid rgba(255,255,255,0.08)', borderLeft: '1px solid rgba(255,255,255,0.04)' }}>
+                              {dayTotal > 0 ? `${dayTotal.toFixed(1)}h` : '—'}
+                            </td>
+                          )
+                        })}
+                        <td style={{ padding: '12px 8px', textAlign: 'center', fontSize: '13px', fontWeight: 800, color: '#4ade80', borderTop: '1px solid rgba(255,255,255,0.08)', borderLeft: '1px solid rgba(255,255,255,0.06)' }}>
+                          {weekEntries.filter(e => !e.deleted_at).reduce((s, e) => s + (e.hours || 0), 0).toFixed(1)}h
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
                 </div>
+
+                {/* Edit modal */}
+                {editingEntry && (
+                  <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
+                    <div style={{ background: '#0f1419', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '16px', padding: '28px', width: '100%', maxWidth: '400px', margin: '16px' }}>
+                      <div style={{ fontSize: '15px', fontWeight: 700, color: 'white', marginBottom: '4px' }}>Edit time entry</div>
+                      <div style={{ fontSize: '12px', color: '#f87171', marginBottom: '20px' }}>This edit will be flagged and logged permanently.</div>
+                      <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
+                        <div style={{ flex: 1 }}>
+                          <label style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '6px', fontWeight: 600 }}>CLOCK IN</label>
+                          <input type="datetime-local" value={editClockIn} onChange={e => setEditClockIn(e.target.value)}
+                            style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: 'white', outline: 'none', boxSizing: 'border-box' as const }} />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <label style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '6px', fontWeight: 600 }}>CLOCK OUT</label>
+                          <input type="datetime-local" value={editClockOut} onChange={e => setEditClockOut(e.target.value)}
+                            style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: 'white', outline: 'none', boxSizing: 'border-box' as const }} />
+                        </div>
+                      </div>
+                      <label style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '6px', fontWeight: 600 }}>REASON FOR EDIT (REQUIRED)</label>
+                      <input placeholder="e.g. Employee forgot to clock out" value={editReason} onChange={e => setEditReason(e.target.value)}
+                        style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: 'white', outline: 'none', marginBottom: '16px', boxSizing: 'border-box' as const }} />
+                      {editMsg && <div style={{ fontSize: '12px', color: '#f87171', marginBottom: '12px' }}>{editMsg}</div>}
+                      <div style={{ display: 'flex', gap: '10px' }}>
+                        <button onClick={() => saveTimeEdit(editingEntry)}
+                          style={{ flex: 1, background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', padding: '11px', fontSize: '13px', fontWeight: 700, cursor: 'pointer' }}>
+                          Save edit
+                        </button>
+                        <button onClick={() => { setEditingEntry(null); setEditReason(''); setEditMsg('') }}
+                          style={{ flex: 1, background: 'transparent', border: '1px solid rgba(255,255,255,0.1)', color: '#64748b', borderRadius: '8px', padding: '11px', fontSize: '13px', cursor: 'pointer' }}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Delete modal */}
+                {deletingEntry && (
+                  <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
+                    <div style={{ background: '#0f1419', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '16px', padding: '28px', width: '100%', maxWidth: '400px', margin: '16px' }}>
+                      <div style={{ fontSize: '15px', fontWeight: 700, color: 'white', marginBottom: '4px' }}>Delete time entry</div>
+                      <div style={{ fontSize: '12px', color: '#f87171', marginBottom: '20px' }}>This will be permanently flagged as deleted. The record is kept for audit purposes.</div>
+                      <label style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '6px', fontWeight: 600 }}>REASON FOR DELETION (REQUIRED)</label>
+                      <input placeholder="e.g. Duplicate entry, employee error" value={deleteReason} onChange={e => setDeleteReason(e.target.value)}
+                        style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '9px 12px', fontSize: '13px', color: 'white', outline: 'none', marginBottom: '16px', boxSizing: 'border-box' as const }} />
+                      {deleteMsg && <div style={{ fontSize: '12px', color: '#f87171', marginBottom: '12px' }}>{deleteMsg}</div>}
+                      <div style={{ display: 'flex', gap: '10px' }}>
+                        <button onClick={() => deleteTimeEntry(deletingEntry)}
+                          style={{ flex: 1, background: '#ef4444', color: 'white', border: 'none', borderRadius: '8px', padding: '11px', fontSize: '13px', fontWeight: 700, cursor: 'pointer' }}>
+                          Confirm delete
+                        </button>
+                        <button onClick={() => { setDeletingEntry(null); setDeleteReason(''); setDeleteMsg('') }}
+                          style={{ flex: 1, background: 'transparent', border: '1px solid rgba(255,255,255,0.1)', color: '#64748b', borderRadius: '8px', padding: '11px', fontSize: '13px', cursor: 'pointer' }}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
+            {/* EMPLOYEES */}
             {tab === 'employees' && (
               <div>
                 <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '24px', marginBottom: '16px' }}>
                   <div style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', marginBottom: '16px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Add employee</div>
                   <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
-  <input value={newName} onChange={e => setNewName(e.target.value)}
-    placeholder="Full name" style={{ ...inputStyle, flex: 1 }}
-    onFocus={e => e.target.style.borderColor = 'rgba(74,222,128,0.5)'}
-    onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.1)'} />
-  <input value={newPin} onChange={e => setNewPin(e.target.value)}
-    placeholder="4-digit PIN" maxLength={4} style={{ ...inputStyle, width: '130px', flex: 'none' }}
-    onFocus={e => e.target.style.borderColor = 'rgba(74,222,128,0.5)'}
-    onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.1)'} />
-</div>
-<div style={{ marginBottom: '12px' }}>
-  <select value={newDept} onChange={e => setNewDept(e.target.value)}
-    style={{ width: '100%', background: '#0f1419', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '10px 14px', fontSize: '14px', color: 'white', outline: 'none', cursor: 'pointer' }}>
-    <option value="Front Desk / Reception">Front Desk / Reception</option>
-    <option value="Housekeeping">Housekeeping</option>
-    <option value="Maintenance / Engineering">Maintenance / Engineering</option>
-    <option value="Management">Management</option>
-    <option value="Laundry">Laundry</option>
-    <option value="Kitchen / Food Service">Kitchen / Food Service</option>
-    <option value="Security">Security</option>
-    <option value="Valet / Parking">Valet / Parking</option>
-    <option value="Spa / Fitness">Spa / Fitness</option>
-  </select>
-</div>
-                  {addMsg && (
-                    <div style={{ fontSize: '12px', marginBottom: '12px', color: addMsg.includes('added') ? '#4ade80' : '#f87171' }}>{addMsg}</div>
-                  )}
-                  <button onClick={addEmployee}
-                    style={{ background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', padding: '10px 20px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}>
+                    <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Full name" style={{ ...inputStyle, flex: 1 }}
+                      onFocus={e => e.target.style.borderColor = 'rgba(74,222,128,0.5)'}
+                      onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.1)'} />
+                    <input value={newPin} onChange={e => setNewPin(e.target.value)} placeholder="4-digit PIN" maxLength={4} style={{ ...inputStyle, width: '130px', flex: 'none' }}
+                      onFocus={e => e.target.style.borderColor = 'rgba(74,222,128,0.5)'}
+                      onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.1)'} />
+                  </div>
+                  <div style={{ marginBottom: '12px' }}>
+                    <select value={newDept} onChange={e => setNewDept(e.target.value)}
+                      style={{ width: '100%', background: '#0f1419', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '10px 14px', fontSize: '14px', color: 'white', outline: 'none', cursor: 'pointer' }}>
+                      <option value="Front Desk / Reception">Front Desk / Reception</option>
+                      <option value="Housekeeping">Housekeeping</option>
+                      <option value="Maintenance / Engineering">Maintenance / Engineering</option>
+                      <option value="Management">Management</option>
+                      <option value="Laundry">Laundry</option>
+                      <option value="Kitchen / Food Service">Kitchen / Food Service</option>
+                      <option value="Security">Security</option>
+                      <option value="Valet / Parking">Valet / Parking</option>
+                      <option value="Spa / Fitness">Spa / Fitness</option>
+                    </select>
+                  </div>
+                  {addMsg && <div style={{ fontSize: '12px', marginBottom: '12px', color: addMsg.includes('added') || addMsg.includes('unlocked') ? '#4ade80' : '#f87171' }}>{addMsg}</div>}
+                  <button onClick={addEmployee} style={{ background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', padding: '10px 20px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}>
                     Add employee
                   </button>
                 </div>
 
                 <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '24px' }}>
-  <div style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', marginBottom: '16px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>All employees</div>
-  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-    {employees.map(e => (
-      <div key={e.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: e.is_active ? '#4ade80' : '#374151' }}/>
-          <div>
-            <div style={{ fontSize: '14px', color: e.is_active ? '#e2e8f0' : '#475569' }}>{e.name}</div>
-            <div style={{ fontSize: '11px', color: '#334155', marginTop: '2px' }}>{(e as any).department || 'Front Desk / Reception'}</div>
-          </div>
-          {lockedEmployees.has(e.id) && (
-            <span style={{ fontSize: '11px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171', padding: '2px 8px', borderRadius: '100px', fontWeight: 600 }}>
-              🔒 Locked
-            </span>
-          )}
-        </div>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          {lockedEmployees.has(e.id) && (
-            <button onClick={() => unlockEmployee(e.id)}
-              style={{ background: 'transparent', border: '1px solid rgba(74,222,128,0.3)', color: '#4ade80', borderRadius: '6px', padding: '5px 12px', fontSize: '12px', cursor: 'pointer', fontWeight: 600 }}>
-              Unlock
-            </button>
-          )}
-          <button onClick={() => toggleEmployee(e.id, e.is_active)}
-            style={{ background: 'transparent', border: `1px solid ${e.is_active ? 'rgba(248,113,113,0.3)' : 'rgba(74,222,128,0.3)'}`, color: e.is_active ? '#f87171' : '#4ade80', borderRadius: '6px', padding: '5px 12px', fontSize: '12px', cursor: 'pointer', fontWeight: 600 }}>
-            {e.is_active ? 'Deactivate' : 'Reactivate'}
-          </button>
-        </div>
-      </div>
-    ))}
-  </div>
-</div>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', marginBottom: '16px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>All employees</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {employees.map(e => (
+                      <div key={e.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: e.is_active ? '#4ade80' : '#374151' }}/>
+                          <div>
+                            <div style={{ fontSize: '14px', color: e.is_active ? '#e2e8f0' : '#475569' }}>{e.name}</div>
+                            <div style={{ fontSize: '11px', color: '#334155', marginTop: '2px' }}>{(e as any).department || 'Front Desk / Reception'}</div>
+                          </div>
+                          {lockedEmployees.has(e.id) && (
+                            <span style={{ fontSize: '11px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171', padding: '2px 8px', borderRadius: '100px', fontWeight: 600 }}>
+                              🔒 Locked
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          {lockedEmployees.has(e.id) && (
+                            <button onClick={() => unlockEmployee(e.id)}
+                              style={{ background: 'transparent', border: '1px solid rgba(74,222,128,0.3)', color: '#4ade80', borderRadius: '6px', padding: '5px 12px', fontSize: '12px', cursor: 'pointer', fontWeight: 600 }}>
+                              Unlock
+                            </button>
+                          )}
+                          <button onClick={() => toggleEmployee(e.id, e.is_active)}
+                            style={{ background: 'transparent', border: `1px solid ${e.is_active ? 'rgba(248,113,113,0.3)' : 'rgba(74,222,128,0.3)'}`, color: e.is_active ? '#f87171' : '#4ade80', borderRadius: '6px', padding: '5px 12px', fontSize: '12px', cursor: 'pointer', fontWeight: 600 }}>
+                            {e.is_active ? 'Deactivate' : 'Reactivate'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
 
+            {/* SETTINGS */}
             {tab === 'settings' && (
               <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '24px' }}>
                 <div style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', marginBottom: '20px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Pay period settings</div>
-
                 <div style={{ marginBottom: '20px' }}>
                   <label style={{ fontSize: '12px', color: '#94a3b8', display: 'block', marginBottom: '8px', fontWeight: 600, letterSpacing: '0.3px' }}>PAY PERIOD STARTS ON</label>
                   <select value={payStartDay} onChange={e => setPayStartDay(Number(e.target.value))} style={selectStyle}>
@@ -626,7 +833,6 @@ if (editedCount > 0) {
                     <option value={6}>Saturday</option>
                   </select>
                 </div>
-
                 <div style={{ marginBottom: '24px' }}>
                   <label style={{ fontSize: '12px', color: '#94a3b8', display: 'block', marginBottom: '8px', fontWeight: 600, letterSpacing: '0.3px' }}>PAY PERIOD LENGTH</label>
                   <select value={payLength} onChange={e => setPayLength(Number(e.target.value))} style={selectStyle}>
@@ -634,7 +840,6 @@ if (editedCount > 0) {
                     <option value={14}>14 days (bi-weekly)</option>
                   </select>
                 </div>
-
                 <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px', padding: '14px', marginBottom: '20px' }}>
                   <div style={{ fontSize: '12px', color: '#475569', marginBottom: '6px' }}>Current pay period preview</div>
                   <div style={{ fontSize: '14px', color: '#94a3b8', fontWeight: 600 }}>
@@ -644,11 +849,7 @@ if (editedCount > 0) {
                     })()}
                   </div>
                 </div>
-
-                {settingsMsg && (
-                  <div style={{ fontSize: '13px', color: settingsMsg.includes('saved') ? '#4ade80' : '#f87171', marginBottom: '12px' }}>{settingsMsg}</div>
-                )}
-
+                {settingsMsg && <div style={{ fontSize: '13px', color: settingsMsg.includes('saved') ? '#4ade80' : '#f87171', marginBottom: '12px' }}>{settingsMsg}</div>}
                 <button onClick={savePayPeriodSettings}
                   style={{ background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', padding: '10px 20px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', boxShadow: '0 0 12px rgba(22,163,74,0.3)' }}>
                   Save settings
