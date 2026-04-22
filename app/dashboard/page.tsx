@@ -18,55 +18,68 @@ type ClockEntry = {
   clock_in: string
   clock_out: string | null
   hours: number | null
+  edited_at?: string
+  edited_by_email?: string
+  edit_reason?: string
+  edit_count?: number
+  original_clock_in?: string
+  original_clock_out?: string
 }
 
 type Property = {
   id: string
   name: string
   timezone: string
+  pay_period_start_day: number
+  pay_period_length: number
+  trial_ends_at: string
+  subscription_status: string
 }
 
-function getPayPeriod(date: Date) {
-  const day = date.getDay()
-  const diff = day === 0 ? -6 : 1 - day
-  const monday = new Date(date)
-  monday.setDate(date.getDate() + diff)
-  monday.setHours(0, 0, 0, 0)
-  const sunday = new Date(monday)
-  sunday.setDate(monday.getDate() + 13)
-  sunday.setHours(23, 59, 59, 999)
-  return { start: monday, end: sunday }
+function getPayPeriod(date: Date, startDay: number = 1, length: number = 14) {
+  const d = new Date(date)
+  const currentDay = d.getDay()
+  let diff = currentDay - startDay
+  if (diff < 0) diff += 7
+  const periodStart = new Date(d)
+  periodStart.setDate(d.getDate() - diff)
+  periodStart.setHours(0, 0, 0, 0)
+  const periodEnd = new Date(periodStart)
+  periodEnd.setDate(periodStart.getDate() + length - 1)
+  periodEnd.setHours(23, 59, 59, 999)
+  return { start: periodStart, end: periodEnd }
 }
 
 function formatTime(iso: string, tz: string) {
-  return new Date(iso).toLocaleTimeString('en-US', {
-    timeZone: tz,
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return new Date(iso).toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit' })
 }
 
 function formatDate(iso: string, tz: string) {
-  return new Date(iso).toLocaleDateString('en-US', {
-    timeZone: tz,
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-  })
+  return new Date(iso).toLocaleDateString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric' })
 }
 
 export default function Dashboard() {
   const [property, setProperty] = useState<Property | null>(null)
   const [employees, setEmployees] = useState<Employee[]>([])
   const [entries, setEntries] = useState<ClockEntry[]>([])
-  const [tab, setTab] = useState<'overview' | 'timesheets' | 'employees'>('overview')
+  const [newDept, setNewDept] = useState('Front Desk / Reception')
+  const [tab, setTab] = useState<'overview' | 'timesheets' | 'employees' | 'settings'>('overview')
   const [loading, setLoading] = useState(true)
   const [newName, setNewName] = useState('')
   const [newPin, setNewPin] = useState('')
   const [addMsg, setAddMsg] = useState('')
   const [welcome, setWelcome] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [payStartDay, setPayStartDay] = useState(1)
+  const [payLength, setPayLength] = useState(14)
+  const [settingsMsg, setSettingsMsg] = useState('')
   const supabase = createClient()
+  const [lockedEmployees, setLockedEmployees] = useState<Set<string>>(new Set())
+  const [editingEntry, setEditingEntry] = useState<string | null>(null)
+const [editClockIn, setEditClockIn] = useState('')
+const [editClockOut, setEditClockOut] = useState('')
+const [editReason, setEditReason] = useState('')
+const [editMsg, setEditMsg] = useState('')
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -83,62 +96,58 @@ export default function Dashboard() {
     setLoading(true)
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { window.location.href = '/login'; return }
-
-    const { data: prop } = await supabase
-      .from('properties')
-      .select('id, name, timezone')
-      .eq('owner_email', user.email)
-      .single()
-
+    const { data: prop } = await supabase.from('properties')
+  .select('id, name, timezone, pay_period_start_day, pay_period_length, trial_ends_at, subscription_status')
+  .eq('owner_email', user.email).single()
     if (!prop) { setLoading(false); return }
     setProperty(prop)
+    setPayStartDay(prop.pay_period_start_day ?? 1)
+    setPayLength(prop.pay_period_length ?? 14)
     await loadData(prop)
   }
 
   async function loadData(prop: Property) {
-    const { start, end } = getPayPeriod(new Date())
-
-    const { data: emps } = await supabase
-      .from('employees')
-      .select('id, name, is_active')
-      .eq('property_id', prop.id)
-
-    const { data: open } = await supabase
-      .from('clock_entries')
-      .select('employee_id, clock_in')
-      .eq('property_id', prop.id)
-      .is('clock_out', null)
-
+    const { start, end } = getPayPeriod(new Date(), prop.pay_period_start_day ?? 1, prop.pay_period_length ?? 14)
+    const { data: emps } = await supabase.from('employees').select('id, name, is_active').eq('property_id', prop.id)
+    const { data: open } = await supabase.from('clock_entries').select('employee_id, clock_in').eq('property_id', prop.id).is('clock_out', null)
     const openMap = new Map((open || []).map((e: any) => [e.employee_id, e.clock_in]))
-
-    setEmployees((emps || []).map((e: any) => ({
-      id: e.id,
-      name: e.name,
-      is_active: e.is_active,
-      clocked_in: openMap.has(e.id),
-      clock_in_time: openMap.get(e.id) || null,
-    })))
-
-    const { data: periodEntries } = await supabase
-      .from('clock_entries')
-      .select('id, employee_id, clock_in, clock_out, employees(name)')
-      .eq('property_id', prop.id)
-      .gte('clock_in', start.toISOString())
-      .lte('clock_in', end.toISOString())
-      .order('clock_in', { ascending: false })
-
-    setEntries((periodEntries || []).map((e: any) => ({
-      id: e.id,
-      employee_id: e.employee_id,
-      employee_name: e.employees?.name || 'Unknown',
-      clock_in: e.clock_in,
-      clock_out: e.clock_out,
-      hours: e.clock_out
-        ? Math.round(((new Date(e.clock_out).getTime() - new Date(e.clock_in).getTime()) / 3600000) * 100) / 100
-        : null,
-    })))
-
+  
+    const mappedEmps = (emps || []).map((e: any) => ({
+      id: e.id, name: e.name, is_active: e.is_active,
+      clocked_in: openMap.has(e.id), clock_in_time: openMap.get(e.id) || null,
+    }))
+    setEmployees(mappedEmps)
+    await checkLockedEmployees(mappedEmps)
+  
+    const { data: periodEntries } = await supabase.from('clock_entries')
+  .select('id, employee_id, clock_in, clock_out, edited_at, edited_by_email, edit_reason, edit_count, original_clock_in, original_clock_out, employees(name)')
+  .eq('property_id', prop.id).gte('clock_in', start.toISOString()).lte('clock_in', end.toISOString())
+  .order('clock_in', { ascending: false })
+  setEntries((periodEntries || []).map((e: any) => ({
+    id: e.id, employee_id: e.employee_id, employee_name: e.employees?.name || 'Unknown',
+    clock_in: e.clock_in, clock_out: e.clock_out,
+    edited_at: e.edited_at, edited_by_email: e.edited_by_email, edit_reason: e.edit_reason,
+    edit_count: e.edit_count || 0,
+    original_clock_in: e.original_clock_in,
+    original_clock_out: e.original_clock_out,
+    hours: e.clock_out ? Math.round(((new Date(e.clock_out).getTime() - new Date(e.clock_in).getTime()) / 3600000) * 100) / 100 : null,
+  })))
     setLoading(false)
+  }
+
+  async function checkLockedEmployees(emps: Employee[]) {
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString()
+    const locked = new Set<string>()
+    for (const emp of emps) {
+      const { count } = await supabase
+        .from('pin_attempts')
+        .select('*', { count: 'exact', head: true })
+        .eq('employee_id', emp.id)
+        .eq('success', false)
+        .gte('attempted_at', fifteenMinutesAgo)
+      if ((count ?? 0) >= 5) locked.add(emp.id)
+    }
+    setLockedEmployees(locked)
   }
 
   async function handleSignOut() {
@@ -151,24 +160,92 @@ export default function Dashboard() {
     if (!newName.trim()) { setAddMsg('Please enter a name.'); return }
     if (!/^\d{4}$/.test(newPin)) { setAddMsg('PIN must be exactly 4 digits.'); return }
     const res = await fetch('/api/employees', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newName.trim(), pin: newPin, property_id: property.id }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName.trim(), pin: newPin, property_id: property.id, department: newDept }),
     })
     const result = await res.json()
     if (result.success) {
-      setNewName(''); setNewPin('')
-      setAddMsg('Employee added!')
-      loadData(property)
-      setTimeout(() => setAddMsg(''), 3000)
-    } else {
-      setAddMsg('Something went wrong.')
-    }
+      setNewName(''); setNewPin(''); setAddMsg('Employee added!'); setNewDept('Front Desk / Reception')
+      loadData(property); setTimeout(() => setAddMsg(''), 3000)
+    } else { setAddMsg('Something went wrong.') }
   }
 
   async function toggleEmployee(id: string, active: boolean) {
     await supabase.from('employees').update({ is_active: !active }).eq('id', id)
     if (property) loadData(property)
+  }
+
+  async function unlockEmployee(id: string) {
+    const res = await fetch('/api/unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ employee_id: id }),
+    })
+    const result = await res.json()
+    if (result.success) {
+      setAddMsg('Employee unlocked!')
+      setTimeout(() => setAddMsg(''), 3000)
+      if (property) loadData(property)
+    }
+  }
+
+  async function savePayPeriodSettings() {
+    if (!property) return
+    const { error } = await supabase.from('properties')
+      .update({ pay_period_start_day: payStartDay, pay_period_length: payLength })
+      .eq('id', property.id)
+    if (!error) {
+      const updated = { ...property, pay_period_start_day: payStartDay, pay_period_length: payLength }
+      setProperty(updated)
+      setSettingsMsg('Settings saved!')
+      loadData(updated)
+      setTimeout(() => setSettingsMsg(''), 3000)
+    } else {
+      setSettingsMsg('Something went wrong.')
+    }
+  }
+
+  async function saveTimeEdit(entryId: string) {
+    if (!editReason.trim()) { setEditMsg('Please enter a reason for the edit.'); return }
+    if (!property) return
+  
+    const { data: { user } } = await supabase.auth.getUser()
+    const entry = entries.find(e => e.id === entryId)
+    if (!entry) return
+  
+    const { error } = await supabase.from('clock_entries')
+  .update({
+    clock_in: new Date(editClockIn).toISOString(),
+    clock_out: editClockOut ? new Date(editClockOut).toISOString() : null,
+    edited_at: new Date().toISOString(),
+    edited_by_email: user?.email,
+    edit_reason: editReason,
+    original_clock_in: entry.original_clock_in || entry.clock_in,
+    original_clock_out: entry.original_clock_out || entry.clock_out,
+    edit_count: (entry.edit_count || 0) + 1,
+  })
+  .eq('id', entryId)
+  
+    if (error) { setEditMsg('Something went wrong.'); return }
+  
+    await supabase.from('audit_log').insert({
+      property_id: property.id,
+      action: 'time_edit',
+      performed_by: user?.email || 'owner',
+      details: {
+        entry_id: entryId,
+        original_in: entry.clock_in,
+        original_out: entry.clock_out,
+        new_in: editClockIn,
+        new_out: editClockOut,
+        reason: editReason,
+      }
+    })
+  
+    setEditingEntry(null)
+    setEditReason('')
+    setEditMsg('')
+    loadData(property)
   }
 
   async function exportPayroll() {
@@ -177,147 +254,179 @@ export default function Dashboard() {
     try {
       const { jsPDF } = await import('jspdf')
       const { default: autoTable } = await import('jspdf-autotable')
-
       const doc = new jsPDF()
-      const { start, end } = getPayPeriod(new Date())
-
+      const { start, end } = getPayPeriod(new Date(), property.pay_period_start_day ?? 1, property.pay_period_length ?? 14)
       doc.setFontSize(18)
       doc.text('InnClock — Payroll Report', 14, 20)
       doc.setFontSize(11)
       doc.setTextColor(100)
       doc.text(property.name, 14, 30)
-      doc.text(
-        `Pay period: ${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} — ${end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`,
-        14, 38
-      )
-
+      doc.text(`Pay period: ${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} — ${end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`, 14, 38)
       const rows: any[] = []
       employees.filter(e => e.is_active).forEach(emp => {
         const empEntries = entries.filter(e => e.employee_id === emp.id)
         const empTotal = empEntries.reduce((s, e) => s + (e.hours || 0), 0)
-        if (empEntries.length === 0) {
-          rows.push([emp.name, '—', '—', '—', '—', '0.00 hrs'])
-        } else {
-          empEntries.forEach((entry, i) => {
-            rows.push([
-              i === 0 ? emp.name : '',
-              formatDate(entry.clock_in, tz),
-              formatTime(entry.clock_in, tz),
-              entry.clock_out ? formatTime(entry.clock_out, tz) : 'Active',
-              entry.hours ? `${entry.hours}h` : '—',
-              i === empEntries.length - 1 ? `${empTotal.toFixed(2)} hrs` : '',
-            ])
-          })
-        }
+        if (empEntries.length === 0) { rows.push([emp.name, '—', '—', '—', '—', '0.00 hrs']); return }
+        empEntries.forEach((entry, i) => {
+          rows.push([
+            i === 0 ? emp.name : '',
+            formatDate(entry.clock_in, tz),
+            formatTime(entry.clock_in, tz),
+            entry.clock_out ? formatTime(entry.clock_out, tz) : 'Active',
+            entry.hours ? `${entry.hours}h` : '—',
+            i === empEntries.length - 1 ? `${empTotal.toFixed(2)} hrs` : '',
+            entry.edited_at ? `Edited ${entry.edit_count || 1}x\nWas: ${entry.original_clock_in ? formatTime(entry.original_clock_in, tz) : '?'} — ${entry.original_clock_out ? formatTime(entry.original_clock_out, tz) : '?'}\nReason: ${entry.edit_reason}` : '',
+          ])
+        })
       })
-
       autoTable(doc, {
-        head: [['Employee', 'Date', 'Clock In', 'Clock Out', 'Hours', 'Total']],
+        head: [['Employee', 'Date', 'Clock In', 'Clock Out', 'Hours', 'Total', 'Notes']],
         body: rows,
         startY: 48,
-        styles: { fontSize: 10 },
-        headStyles: { fillColor: [30, 30, 30] },
+        styles: { fontSize: 9 },
+        headStyles: { fillColor: [22, 163, 74] },
+        columnStyles: {
+          6: { cellWidth: 50, textColor: [220, 53, 69], fontStyle: 'italic' }
+        }
       })
-
       const finalY = (doc as any).lastAutoTable.finalY + 10
-      doc.setFontSize(11)
-      doc.setTextColor(0)
+      doc.setFontSize(11); doc.setTextColor(0)
       doc.text(`Total hours all employees: ${totalHours.toFixed(2)} hrs`, 14, finalY)
-
+const editedCount = entries.filter(e => e.edited_at).length
+if (editedCount > 0) {
+  doc.setFontSize(9)
+  doc.setTextColor(220, 53, 69)
+  doc.text(`* ${editedCount} entr${editedCount === 1 ? 'y was' : 'ies were'} manually adjusted by management after the fact. Original times, edit counts, and reasons are noted in the Notes column for full transparency.`, 14, finalY + 8)
+}
       doc.save(`${property.name.replace(/ /g, '_')}_payroll_${start.toISOString().slice(0, 10)}.pdf`)
-    } catch (err) {
-      console.error('PDF export error:', err)
-      alert('Could not export PDF. Please try again.')
-    }
+    } catch (err) { alert('Could not export PDF. Please try again.') }
     setExporting(false)
   }
 
-  const { start, end } = getPayPeriod(new Date())
+  const { start, end } = getPayPeriod(new Date(), property?.pay_period_start_day ?? 1, property?.pay_period_length ?? 14)
   const totalHours = entries.reduce((sum, e) => sum + (e.hours || 0), 0)
   const clockedInCount = employees.filter(e => e.clocked_in).length
   const tz = property?.timezone || 'America/Chicago'
+  const inputStyle = { width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '10px 14px', fontSize: '14px', color: 'white', outline: 'none', boxSizing: 'border-box' as const }
+  const selectStyle = { width: '100%', background: '#0f1419', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '11px 14px', fontSize: '14px', color: 'white', outline: 'none', cursor: 'pointer', boxSizing: 'border-box' as const }
 
   return (
-    <main className="min-h-screen bg-gray-50">
-      <div className="max-w-4xl mx-auto px-6 py-8">
+    <main style={{ minHeight: '100vh', background: '#080b0e', color: '#f0f4f8' }}>
 
-        {welcome && (
-          <div className="bg-green-50 border border-green-200 rounded-2xl px-5 py-4 mb-6 text-sm text-green-800">
+      <nav style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', padding: '14px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(8,11,14,0.95)', backdropFilter: 'blur(20px)', position: 'sticky', top: 0, zIndex: 50 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
+            <rect width="32" height="32" rx="8" fill="#16a34a"/>
+            <circle cx="16" cy="16" r="9" stroke="white" strokeWidth="2"/>
+            <path d="M16 10v6l4 2.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            <circle cx="16" cy="16" r="1.5" fill="white"/>
+          </svg>
+          <div>
+            <span style={{ fontSize: '15px', fontWeight: 700, color: 'white', letterSpacing: '-0.3px' }}>Inn<span style={{ color: '#4ade80' }}>Clock</span></span>
+            {property && <span style={{ fontSize: '12px', color: '#475569', marginLeft: '10px' }}>{property.name}</span>}
+          </div>
+        </div>
+        <button onClick={handleSignOut}
+          style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: '#94a3b8', borderRadius: '8px', padding: '7px 14px', fontSize: '13px', cursor: 'pointer' }}>
+          Sign out
+        </button>
+      </nav>
+
+      <div style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 24px' }}>
+
+      {welcome && (
+          <div style={{ background: 'rgba(22,163,74,0.1)', border: '1px solid rgba(22,163,74,0.3)', borderRadius: '12px', padding: '14px 18px', marginBottom: '24px', fontSize: '14px', color: '#4ade80', display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
             Welcome to InnClock! Your property is set up and ready to go.
           </div>
         )}
 
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-2xl font-semibold text-gray-900">InnClock</h1>
-            <p className="text-sm text-gray-500 mt-1">{property?.name || 'Loading...'} — Owner Dashboard</p>
-          </div>
-          <button onClick={handleSignOut}
-            className="text-sm text-gray-400 hover:text-gray-600 border border-gray-200 rounded-xl px-4 py-2">
-            Sign out
-          </button>
-        </div>
+        {/* Trial banner */}
+        {property && property.subscription_status === 'trial' && (() => {
+          const daysLeft = Math.ceil((new Date(property.trial_ends_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+          const isExpired = daysLeft <= 0
+          const isUrgent = daysLeft <= 3
+          return (
+            <div style={{ background: isExpired ? 'rgba(239,68,68,0.1)' : isUrgent ? 'rgba(245,158,11,0.1)' : 'rgba(22,163,74,0.05)', border: `1px solid ${isExpired ? 'rgba(239,68,68,0.3)' : isUrgent ? 'rgba(245,158,11,0.3)' : 'rgba(22,163,74,0.2)'}`, borderRadius: '12px', padding: '14px 18px', marginBottom: '24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '16px' }}>{isExpired ? '⚠️' : isUrgent ? '⏰' : '🎉'}</span>
+                <div>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: isExpired ? '#f87171' : isUrgent ? '#fbbf24' : '#4ade80' }}>
+                    {isExpired ? 'Your free trial has expired' : `Free trial — ${daysLeft} day${daysLeft === 1 ? '' : 's'} remaining`}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#475569', marginTop: '2px' }}>
+                    {isExpired ? 'Subscribe to keep using InnClock' : 'Subscribe anytime to keep your data and continue uninterrupted'}
+                  </div>
+                </div>
+              </div>
+              <a href="/signup" style={{ background: isExpired ? '#ef4444' : '#16a34a', color: 'white', borderRadius: '8px', padding: '8px 16px', fontSize: '12px', fontWeight: 600, textDecoration: 'none', whiteSpace: 'nowrap' }}>
+                {isExpired ? 'Subscribe now' : 'Upgrade →'}
+              </a>
+            </div>
+          )
+        })()}
 
-        <div className="flex gap-2 mb-6 bg-white border border-gray-200 rounded-2xl p-1 w-fit">
-          {(['overview', 'timesheets', 'employees'] as const).map(t => (
+        <div style={{ display: 'flex', gap: '4px', marginBottom: '28px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px', padding: '4px', width: 'fit-content' }}>
+          {(['overview', 'timesheets', 'employees', 'settings'] as const).map(t => (
             <button key={t} onClick={() => setTab(t)}
-              className={`px-4 py-2 rounded-xl text-sm font-medium transition-all capitalize ${tab === t ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-800'}`}>
+              style={{ padding: '8px 18px', borderRadius: '9px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', border: 'none', transition: 'all 0.15s', textTransform: 'capitalize',
+                background: tab === t ? '#16a34a' : 'transparent',
+                color: tab === t ? 'white' : '#64748b',
+                boxShadow: tab === t ? '0 0 12px rgba(22,163,74,0.3)' : 'none',
+              }}>
               {t}
             </button>
           ))}
         </div>
 
         {loading ? (
-          <p className="text-gray-400 text-sm">Loading your property...</p>
+          <div style={{ textAlign: 'center', color: '#475569', padding: '60px', fontSize: '14px' }}>Loading your property...</div>
         ) : !property ? (
-          <div className="bg-white border border-gray-200 rounded-2xl p-6 text-center">
-            <p className="text-gray-500 text-sm">No property found for your account.</p>
-            <a href="/signup" className="text-blue-500 text-sm hover:underline mt-2 block">Set up a property</a>
+          <div style={{ textAlign: 'center', padding: '60px' }}>
+            <p style={{ color: '#475569', fontSize: '14px', marginBottom: '12px' }}>No property found for your account.</p>
+            <a href="/signup" style={{ color: '#4ade80', fontSize: '14px' }}>Set up a property →</a>
           </div>
         ) : (
           <>
             {tab === 'overview' && (
               <div>
-                <div className="grid grid-cols-3 gap-4 mb-6">
-                  <div className="bg-white border border-gray-200 rounded-2xl p-4">
-                    <p className="text-xs text-gray-500 mb-1">Currently clocked in</p>
-                    <p className="text-3xl font-semibold text-gray-900">{clockedInCount}</p>
-                  </div>
-                  <div className="bg-white border border-gray-200 rounded-2xl p-4">
-                    <p className="text-xs text-gray-500 mb-1">Total employees</p>
-                    <p className="text-3xl font-semibold text-gray-900">{employees.filter(e => e.is_active).length}</p>
-                  </div>
-                  <div className="bg-white border border-gray-200 rounded-2xl p-4">
-                    <p className="text-xs text-gray-500 mb-1">Hours this period</p>
-                    <p className="text-3xl font-semibold text-gray-900">{totalHours.toFixed(1)}</p>
-                  </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '20px' }}>
+                  {[
+                    { label: 'Clocked in now', value: clockedInCount, color: '#4ade80' },
+                    { label: 'Total employees', value: employees.filter(e => e.is_active).length, color: '#f0f4f8' },
+                    { label: 'Hours this period', value: totalHours.toFixed(1), color: '#f0f4f8' },
+                  ].map(({ label, value, color }) => (
+                    <div key={label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '20px' }}>
+                      <div style={{ fontSize: '12px', color: '#475569', marginBottom: '8px', fontWeight: 600, letterSpacing: '0.3px', textTransform: 'uppercase' }}>{label}</div>
+                      <div style={{ fontSize: '32px', fontWeight: 800, color, letterSpacing: '-1px' }}>{value}</div>
+                    </div>
+                  ))}
                 </div>
 
-                <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 mb-6">
-                  <p className="text-sm font-medium text-blue-800 mb-1">Your clock-in kiosk URL</p>
-                  <p className="text-xs text-blue-600 mb-3">Bookmark this on your front desk tablet so employees can clock in</p>
-                  <div className="flex items-center gap-3">
-                    <code className="text-xs bg-white border border-blue-200 rounded-xl px-3 py-2 flex-1 text-blue-700 truncate">
-                      {typeof window !== 'undefined' ? `${window.location.origin}/clock/${property?.id}` : ''}
+                <div style={{ background: 'rgba(22,163,74,0.05)', border: '1px solid rgba(22,163,74,0.2)', borderRadius: '14px', padding: '18px', marginBottom: '20px' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#4ade80', marginBottom: '4px' }}>Your clock-in kiosk URL</div>
+                  <div style={{ fontSize: '12px', color: '#475569', marginBottom: '12px' }}>Bookmark this on your front desk tablet</div>
+                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                    <code style={{ flex: 1, background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px', padding: '9px 12px', fontSize: '12px', color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {typeof window !== 'undefined' ? `${window.location.origin}/clock/${property.id}` : ''}
                     </code>
-                    <button
-                      onClick={() => navigator.clipboard.writeText(`${window.location.origin}/clock/${property?.id}`)}
-                      className="text-xs bg-blue-500 text-white rounded-xl px-3 py-2 hover:bg-blue-600 transition-all">
+                    <button onClick={() => navigator.clipboard.writeText(`${window.location.origin}/clock/${property.id}`)}
+                      style={{ background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', padding: '9px 16px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
                       Copy
                     </button>
                   </div>
                 </div>
 
-                <div className="bg-white border border-gray-200 rounded-2xl p-5">
-                  <h2 className="text-sm font-medium text-gray-700 mb-4">Employee status</h2>
-                  <div className="flex flex-col gap-3">
+                <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '20px' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', marginBottom: '16px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Employee status</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {employees.filter(e => e.is_active).map(e => (
-                      <div key={e.id} className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <div className={`w-2 h-2 rounded-full ${e.clocked_in ? 'bg-green-500' : 'bg-gray-300'}`} />
-                          <span className="text-sm text-gray-800">{e.name}</span>
+                      <div key={e.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: e.clocked_in ? '#4ade80' : '#374151', boxShadow: e.clocked_in ? '0 0 6px #4ade80' : 'none' }}/>
+                          <span style={{ fontSize: '14px', color: '#e2e8f0' }}>{e.name}</span>
                         </div>
-                        <span className="text-xs text-gray-500">
+                        <span style={{ fontSize: '12px', color: e.clocked_in ? '#4ade80' : '#475569' }}>
                           {e.clocked_in ? `In since ${formatTime(e.clock_in_time!, tz)}` : 'Not clocked in'}
                         </span>
                       </div>
@@ -328,95 +437,222 @@ export default function Dashboard() {
             )}
 
             {tab === 'timesheets' && (
-              <div className="bg-white border border-gray-200 rounded-2xl p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-sm font-medium text-gray-700">Pay period</h2>
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs text-gray-500">
+              <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '24px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
+                  <div>
+                    <div style={{ fontSize: '15px', fontWeight: 700, color: 'white', marginBottom: '2px' }}>Pay period</div>
+                    <div style={{ fontSize: '12px', color: '#475569' }}>
                       {start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} — {end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                    </span>
-                    <button
-                      onClick={exportPayroll}
-                      disabled={exporting}
-                      className="text-xs bg-gray-900 text-white px-3 py-1.5 rounded-xl hover:bg-gray-700 transition-all disabled:opacity-50">
-                      {exporting ? 'Exporting...' : 'Export PDF'}
-                    </button>
+                    </div>
                   </div>
+                  <button onClick={exportPayroll} disabled={exporting}
+                    style={{ background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', padding: '9px 16px', fontSize: '13px', fontWeight: 600, cursor: exporting ? 'not-allowed' : 'pointer', opacity: exporting ? 0.6 : 1 }}>
+                    {exporting ? 'Exporting...' : 'Export PDF'}
+                  </button>
                 </div>
 
                 {employees.filter(e => e.is_active).map(emp => {
                   const empEntries = entries.filter(e => e.employee_id === emp.id)
                   const empTotal = empEntries.reduce((s, e) => s + (e.hours || 0), 0)
                   return (
-                    <div key={emp.id} className="mb-6">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-sm font-medium text-gray-800">{emp.name}</span>
-                        <span className="text-sm font-semibold text-gray-900">{empTotal.toFixed(2)} hrs</span>
+                    <div key={emp.id} style={{ marginBottom: '24px', paddingBottom: '24px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                        <span style={{ fontSize: '14px', fontWeight: 600, color: '#e2e8f0' }}>{emp.name}</span>
+                        <span style={{ fontSize: '14px', fontWeight: 700, color: '#4ade80' }}>{empTotal.toFixed(2)} hrs</span>
                       </div>
                       {empEntries.length === 0 ? (
-                        <p className="text-xs text-gray-400 pl-2">No entries this period</p>
+                        <p style={{ fontSize: '12px', color: '#334155', paddingLeft: '8px' }}>No entries this period</p>
                       ) : (
-                        <div className="flex flex-col gap-1">
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                           {empEntries.map(e => (
-                            <div key={e.id} className="flex items-center gap-3 text-xs text-gray-500 pl-2">
-                              <span className="w-24">{formatDate(e.clock_in, tz)}</span>
-                              <span className="text-green-600">▶ {formatTime(e.clock_in, tz)}</span>
-                              <span className="text-red-500">◼ {e.clock_out ? formatTime(e.clock_out, tz) : '—'}</span>
-                              <span className="ml-auto font-medium text-gray-700">{e.hours ? `${e.hours}h` : 'Active'}</span>
-                            </div>
-                          ))}
+  <div key={e.id}>
+    {editingEntry === e.id ? (
+      <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '12px', marginBottom: '8px' }}>
+        <div style={{ fontSize: '11px', color: '#f87171', marginBottom: '10px', fontWeight: 600 }}>EDITING TIME ENTRY</div>
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>Clock in</div>
+            <input type="datetime-local" value={editClockIn} onChange={e => setEditClockIn(e.target.value)}
+              style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '7px 10px', fontSize: '12px', color: 'white', outline: 'none', boxSizing: 'border-box' as const }} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>Clock out</div>
+            <input type="datetime-local" value={editClockOut} onChange={e => setEditClockOut(e.target.value)}
+              style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '7px 10px', fontSize: '12px', color: 'white', outline: 'none', boxSizing: 'border-box' as const }} />
+          </div>
+        </div>
+        <input placeholder="Reason for edit (required)" value={editReason} onChange={e => setEditReason(e.target.value)}
+          style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '7px 10px', fontSize: '12px', color: 'white', outline: 'none', marginBottom: '8px', boxSizing: 'border-box' as const }} />
+        {editMsg && <div style={{ fontSize: '11px', color: '#f87171', marginBottom: '8px' }}>{editMsg}</div>}
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button onClick={() => saveTimeEdit(e.id)}
+            style={{ background: '#16a34a', color: 'white', border: 'none', borderRadius: '6px', padding: '6px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>
+            Save
+          </button>
+          <button onClick={() => { setEditingEntry(null); setEditReason(''); setEditMsg('') }}
+            style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.1)', color: '#64748b', borderRadius: '6px', padding: '6px 14px', fontSize: '12px', cursor: 'pointer' }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    ) : (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '12px', color: '#64748b', paddingLeft: '8px', paddingTop: '4px', paddingBottom: '4px' }}>
+        <span style={{ minWidth: '90px' }}>{formatDate(e.clock_in, tz)}</span>
+        <span style={{ color: '#4ade80' }}>▶ {formatTime(e.clock_in, tz)}</span>
+        <span style={{ color: '#f87171' }}>◼ {e.clock_out ? formatTime(e.clock_out, tz) : '—'}</span>
+        {e.edited_at && (
+  <span style={{ fontSize: '10px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171', padding: '1px 6px', borderRadius: '100px', fontWeight: 600 }}
+    title={`Last edited by ${e.edited_by_email} — Reason: ${e.edit_reason}`}>
+    ✎ Edited {(e.edit_count || 0) > 1 ? `(${e.edit_count}x)` : ''}
+  </span>
+)}
+        <span style={{ marginLeft: 'auto', fontWeight: 600, color: '#94a3b8' }}>{e.hours ? `${e.hours}h` : 'Active'}</span>
+        <button onClick={() => {
+          setEditingEntry(e.id)
+          setEditMsg('')
+          const toLocal = (iso: string) => {
+            const d = new Date(iso)
+            return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+          }
+          setEditClockIn(toLocal(e.clock_in))
+          setEditClockOut(e.clock_out ? toLocal(e.clock_out) : '')
+        }}
+          style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.08)', color: '#475569', borderRadius: '6px', padding: '3px 10px', fontSize: '11px', cursor: 'pointer' }}>
+          Edit
+        </button>
+      </div>
+    )}
+  </div>
+))}
                         </div>
                       )}
-                      <div className="border-b border-gray-100 mt-3" />
                     </div>
                   )
                 })}
 
-                <div className="flex justify-between pt-2">
-                  <span className="text-sm font-medium text-gray-700">Total hours</span>
-                  <span className="text-sm font-semibold text-gray-900">{totalHours.toFixed(2)} hrs</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: '8px' }}>
+                  <span style={{ fontSize: '14px', fontWeight: 600, color: '#94a3b8' }}>Total hours</span>
+                  <span style={{ fontSize: '16px', fontWeight: 800, color: '#4ade80' }}>{totalHours.toFixed(2)} hrs</span>
                 </div>
               </div>
             )}
 
             {tab === 'employees' && (
               <div>
-                <div className="bg-white border border-gray-200 rounded-2xl p-5 mb-4">
-                  <h2 className="text-sm font-medium text-gray-700 mb-4">Add employee</h2>
-                  <div className="flex gap-3 mb-3">
-                    <input value={newName} onChange={e => setNewName(e.target.value)}
-                      placeholder="Full name"
-                      className="flex-1 border border-gray-200 rounded-xl px-4 py-2 text-sm focus:outline-none focus:border-blue-400" />
-                    <input value={newPin} onChange={e => setNewPin(e.target.value)}
-                      placeholder="4-digit PIN" maxLength={4}
-                      className="w-32 border border-gray-200 rounded-xl px-4 py-2 text-sm focus:outline-none focus:border-blue-400" />
-                  </div>
+                <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '24px', marginBottom: '16px' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', marginBottom: '16px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Add employee</div>
+                  <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
+  <input value={newName} onChange={e => setNewName(e.target.value)}
+    placeholder="Full name" style={{ ...inputStyle, flex: 1 }}
+    onFocus={e => e.target.style.borderColor = 'rgba(74,222,128,0.5)'}
+    onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.1)'} />
+  <input value={newPin} onChange={e => setNewPin(e.target.value)}
+    placeholder="4-digit PIN" maxLength={4} style={{ ...inputStyle, width: '130px', flex: 'none' }}
+    onFocus={e => e.target.style.borderColor = 'rgba(74,222,128,0.5)'}
+    onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.1)'} />
+</div>
+<div style={{ marginBottom: '12px' }}>
+  <select value={newDept} onChange={e => setNewDept(e.target.value)}
+    style={{ width: '100%', background: '#0f1419', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '10px 14px', fontSize: '14px', color: 'white', outline: 'none', cursor: 'pointer' }}>
+    <option value="Front Desk / Reception">Front Desk / Reception</option>
+    <option value="Housekeeping">Housekeeping</option>
+    <option value="Maintenance / Engineering">Maintenance / Engineering</option>
+    <option value="Management">Management</option>
+    <option value="Laundry">Laundry</option>
+    <option value="Kitchen / Food Service">Kitchen / Food Service</option>
+    <option value="Security">Security</option>
+    <option value="Valet / Parking">Valet / Parking</option>
+    <option value="Spa / Fitness">Spa / Fitness</option>
+  </select>
+</div>
                   {addMsg && (
-                    <p className={`text-xs mb-3 ${addMsg.includes('added') ? 'text-green-600' : 'text-red-500'}`}>{addMsg}</p>
+                    <div style={{ fontSize: '12px', marginBottom: '12px', color: addMsg.includes('added') ? '#4ade80' : '#f87171' }}>{addMsg}</div>
                   )}
                   <button onClick={addEmployee}
-                    className="bg-gray-900 text-white rounded-xl px-5 py-2 text-sm font-medium hover:bg-gray-700 transition-all">
+                    style={{ background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', padding: '10px 20px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}>
                     Add employee
                   </button>
                 </div>
 
-                <div className="bg-white border border-gray-200 rounded-2xl p-5">
-                  <h2 className="text-sm font-medium text-gray-700 mb-4">All employees</h2>
-                  <div className="flex flex-col gap-3">
-                    {employees.map(e => (
-                      <div key={e.id} className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <div className={`w-2 h-2 rounded-full ${e.is_active ? 'bg-green-500' : 'bg-gray-300'}`} />
-                          <span className={`text-sm ${e.is_active ? 'text-gray-800' : 'text-gray-400'}`}>{e.name}</span>
-                        </div>
-                        <button onClick={() => toggleEmployee(e.id, e.is_active)}
-                          className={`text-xs px-3 py-1 rounded-full border transition-all ${e.is_active ? 'border-red-200 text-red-500 hover:bg-red-50' : 'border-green-200 text-green-600 hover:bg-green-50'}`}>
-                          {e.is_active ? 'Deactivate' : 'Reactivate'}
-                        </button>
-                      </div>
-                    ))}
+                <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '24px' }}>
+  <div style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', marginBottom: '16px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>All employees</div>
+  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+    {employees.map(e => (
+      <div key={e.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: e.is_active ? '#4ade80' : '#374151' }}/>
+          <div>
+            <div style={{ fontSize: '14px', color: e.is_active ? '#e2e8f0' : '#475569' }}>{e.name}</div>
+            <div style={{ fontSize: '11px', color: '#334155', marginTop: '2px' }}>{(e as any).department || 'Front Desk / Reception'}</div>
+          </div>
+          {lockedEmployees.has(e.id) && (
+            <span style={{ fontSize: '11px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171', padding: '2px 8px', borderRadius: '100px', fontWeight: 600 }}>
+              🔒 Locked
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          {lockedEmployees.has(e.id) && (
+            <button onClick={() => unlockEmployee(e.id)}
+              style={{ background: 'transparent', border: '1px solid rgba(74,222,128,0.3)', color: '#4ade80', borderRadius: '6px', padding: '5px 12px', fontSize: '12px', cursor: 'pointer', fontWeight: 600 }}>
+              Unlock
+            </button>
+          )}
+          <button onClick={() => toggleEmployee(e.id, e.is_active)}
+            style={{ background: 'transparent', border: `1px solid ${e.is_active ? 'rgba(248,113,113,0.3)' : 'rgba(74,222,128,0.3)'}`, color: e.is_active ? '#f87171' : '#4ade80', borderRadius: '6px', padding: '5px 12px', fontSize: '12px', cursor: 'pointer', fontWeight: 600 }}>
+            {e.is_active ? 'Deactivate' : 'Reactivate'}
+          </button>
+        </div>
+      </div>
+    ))}
+  </div>
+</div>
+              </div>
+            )}
+
+            {tab === 'settings' && (
+              <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '24px' }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', marginBottom: '20px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Pay period settings</div>
+
+                <div style={{ marginBottom: '20px' }}>
+                  <label style={{ fontSize: '12px', color: '#94a3b8', display: 'block', marginBottom: '8px', fontWeight: 600, letterSpacing: '0.3px' }}>PAY PERIOD STARTS ON</label>
+                  <select value={payStartDay} onChange={e => setPayStartDay(Number(e.target.value))} style={selectStyle}>
+                    <option value={0}>Sunday</option>
+                    <option value={1}>Monday</option>
+                    <option value={2}>Tuesday</option>
+                    <option value={3}>Wednesday</option>
+                    <option value={4}>Thursday</option>
+                    <option value={5}>Friday</option>
+                    <option value={6}>Saturday</option>
+                  </select>
+                </div>
+
+                <div style={{ marginBottom: '24px' }}>
+                  <label style={{ fontSize: '12px', color: '#94a3b8', display: 'block', marginBottom: '8px', fontWeight: 600, letterSpacing: '0.3px' }}>PAY PERIOD LENGTH</label>
+                  <select value={payLength} onChange={e => setPayLength(Number(e.target.value))} style={selectStyle}>
+                    <option value={7}>7 days (weekly)</option>
+                    <option value={14}>14 days (bi-weekly)</option>
+                  </select>
+                </div>
+
+                <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px', padding: '14px', marginBottom: '20px' }}>
+                  <div style={{ fontSize: '12px', color: '#475569', marginBottom: '6px' }}>Current pay period preview</div>
+                  <div style={{ fontSize: '14px', color: '#94a3b8', fontWeight: 600 }}>
+                    {(() => {
+                      const { start, end } = getPayPeriod(new Date(), payStartDay, payLength)
+                      return `${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} — ${end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+                    })()}
                   </div>
                 </div>
+
+                {settingsMsg && (
+                  <div style={{ fontSize: '13px', color: settingsMsg.includes('saved') ? '#4ade80' : '#f87171', marginBottom: '12px' }}>{settingsMsg}</div>
+                )}
+
+                <button onClick={savePayPeriodSettings}
+                  style={{ background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', padding: '10px 20px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', boxShadow: '0 0 12px rgba(22,163,74,0.3)' }}>
+                  Save settings
+                </button>
               </div>
             )}
           </>
